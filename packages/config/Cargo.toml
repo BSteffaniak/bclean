@@ -11,8 +11,18 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_catalog = { workspace = true }
+bclean_model = { workspace = true }
 bmux_config_composition = { workspace = true }
+dirs = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_catalog/fail-on-warnings",
+    "bclean_model/fail-on-warnings",
+]

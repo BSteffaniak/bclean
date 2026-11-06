@@ -1,0 +1,148 @@
+# Web browser caches. Only cache directories are matched, never profiles, history, or storage.
+# Paths under ~/Library/Caches and ~/.cache are matched at the first level below the cache
+# root, because the classifier does not descend into an entry once a rule has matched it.
+
+[rules.chromium_cache_macos]
+category = "browsers"
+description = "Chromium-family browser HTTP caches on macOS (Chrome and other Google apps, Chromium, Edge, Brave, Vivaldi, Arc)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.chromium_cache_macos.match]
+path = [
+    "~/Library/Caches/Google",
+    "~/Library/Caches/Chromium",
+    "~/Library/Caches/Microsoft Edge",
+    "~/Library/Caches/BraveSoftware",
+    "~/Library/Caches/com.vivaldi.Vivaldi",
+    "~/Library/Caches/Arc",
+    "~/Library/Caches/company.thebrowser.Browser",
+]
+os = ["MACOS"]
+
+[rules.chromium_cache_linux]
+category = "browsers"
+description = "Chromium-family browser HTTP caches on Linux"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.chromium_cache_linux.match]
+path = [
+    "~/.cache/google-chrome",
+    "~/.cache/google-chrome-beta",
+    "~/.cache/google-chrome-unstable",
+    "~/.cache/chromium",
+    "~/.cache/microsoft-edge",
+    "~/.cache/BraveSoftware",
+    "~/.cache/vivaldi",
+]
+os = ["LINUX"]
+
+[rules.chromium_cache_windows]
+category = "browsers"
+description = "Chromium-family per-profile cache directories on Windows (Cache, Code Cache, GPUCache)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.chromium_cache_windows.match]
+name = ["Cache", "Code Cache", "GPUCache"]
+path = [
+    "%LOCALAPPDATA%/Google/Chrome/User Data/*/*",
+    "%LOCALAPPDATA%/Chromium/User Data/*/*",
+    "%LOCALAPPDATA%/Microsoft/Edge/User Data/*/*",
+    "%LOCALAPPDATA%/BraveSoftware/Brave-Browser/User Data/*/*",
+]
+os = ["WINDOWS"]
+
+[rules.firefox_cache]
+category = "browsers"
+description = "Firefox HTTP caches, stored outside the profile directory (Firefox's local cache root)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.firefox_cache.match]
+path = [
+    "~/Library/Caches/Firefox",
+    "~/.cache/mozilla",
+    "%LOCALAPPDATA%/Mozilla/Firefox/Profiles/*/cache2",
+]
+
+[rules.safari_cache]
+category = "browsers"
+description = "Safari HTTP cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.safari_cache.match]
+path = ["~/Library/Caches/com.apple.Safari"]
+os = ["MACOS"]
+
+[rules.electron_app_caches_macos]
+category = "browsers"
+description = "Embedded Chromium caches of Electron apps (Cache, Code Cache, GPUCache under Application Support)"
+confidence = "MEDIUM"
+priority = 5
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.electron_app_caches_macos.match]
+name = [
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "ShaderCache",
+]
+path = ["~/Library/Application Support/*/*"]
+os = ["MACOS"]
+
+[rules.electron_app_caches_linux]
+category = "browsers"
+description = "Embedded Chromium caches of Electron apps under ~/.config"
+confidence = "MEDIUM"
+priority = 5
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.electron_app_caches_linux.match]
+name = [
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "ShaderCache",
+]
+path = ["~/.config/*/*"]
+os = ["LINUX"]
+
+[rules.electron_app_caches_windows]
+category = "browsers"
+description = "Embedded Chromium caches of Electron apps under %APPDATA%"
+confidence = "MEDIUM"
+priority = 5
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.electron_app_caches_windows.match]
+name = [
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "ShaderCache",
+]
+path = ["%APPDATA%/*/*"]
+os = ["WINDOWS"]

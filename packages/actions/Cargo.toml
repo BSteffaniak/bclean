@@ -10,8 +10,42 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# The journal uses SQLite through `switchy_database` (`sqlite-rusqlite`), which always compiles
+# the bundled SQLite amalgamation. Cross-target type checks use the no-op cc/ar stubs via
+# `scripts/cross-check.sh`.
 [dependencies]
+bclean_model = { workspace = true }
+dirs = { workspace = true }
+flate2 = { workspace = true, features = ["rust_backend"] }
+globset = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+switchy_database = { workspace = true }
+switchy_database_connection = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+trash = { workspace = true, features = [
+    "chrono",
+    "coinit_multithreaded",
+    "freedesktop",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+switchy_database = { workspace = true, features = ["sqlite-test-fixtures"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = ["bclean_model/fail-on-warnings"]

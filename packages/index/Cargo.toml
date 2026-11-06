@@ -10,8 +10,31 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# SQLite comes from `switchy_database`'s `sqlite-rusqlite` backend. The MoosicBox workspace pins
+# `rusqlite` with `bundled`, so the SQLite amalgamation is always compiled for the target. Native
+# builds on macOS/Linux/Windows need only the host C toolchain. Cross-target `cargo check`
+# from another host has no target C headers; because `cargo check` never links, point cc-rs at
+# the no-op stubs in `scripts/check-cc-stub` for that target, e.g.
+# `CC_x86_64_pc_windows_msvc=$PWD/scripts/check-cc-stub/cc
+#  AR_x86_64_pc_windows_msvc=$PWD/scripts/check-cc-stub/ar
+#  cargo check -p bclean_index --target x86_64-pc-windows-msvc`.
 [dependencies]
+bclean_model = { workspace = true }
+bclean_tree = { workspace = true }
+log = { workspace = true }
+switchy_database = { workspace = true }
+switchy_database_connection = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
+
+[dev-dependencies]
+switchy_database = { workspace = true, features = ["sqlite-test-fixtures"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_model/fail-on-warnings",
+    "bclean_tree/fail-on-warnings",
+]

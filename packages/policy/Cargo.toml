@@ -11,7 +11,28 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_actions = { workspace = true }
+bclean_model = { workspace = true }
+chrono = { workspace = true, features = ["clock", "std"] }
+cron = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["std"] }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_actions/fail-on-warnings",
+    "bclean_model/fail-on-warnings",
+]

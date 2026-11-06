@@ -11,7 +11,35 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_actions = { workspace = true }
+bclean_engine = { workspace = true }
+bclean_protocol = { workspace = true }
+bclean_watch = { workspace = true }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "signal",
+] }
+
+[dev-dependencies]
+bclean_client = { workspace = true }
+bclean_config = { workspace = true }
+bclean_index = { workspace = true }
+filetime = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_actions/fail-on-warnings",
+    "bclean_engine/fail-on-warnings",
+    "bclean_protocol/fail-on-warnings",
+    "bclean_watch/fail-on-warnings",
+]

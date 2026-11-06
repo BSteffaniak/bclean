@@ -1,0 +1,93 @@
+# Container runtimes and their VM disk images. VM images are never deleted directly: use the
+# runtime's own pruning so images, volumes, and the VM stay consistent.
+
+[rules.docker_desktop_vm]
+category = "containers"
+description = "Docker Desktop VM disk image; reclaim space with `docker system prune` (never delete the image file directly)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CONTAINER", regen_cost = "EXPENSIVE" }
+action = { kind = "COMMAND", run = "docker system prune --force", fallback = "NONE" }
+[rules.docker_desktop_vm.match]
+path = [
+    "~/Library/Containers/com.docker.docker/Data/vms",
+    "%LOCALAPPDATA%/Docker/wsl",
+]
+
+[rules.docker_linux_data]
+category = "containers"
+description = "Docker engine data root; reclaim space with `docker system prune`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CONTAINER", regen_cost = "EXPENSIVE" }
+action = { kind = "COMMAND", run = "docker system prune --force", fallback = "NONE" }
+[rules.docker_linux_data.match]
+path = ["/var/lib/docker", "~/.local/share/docker"]
+os = ["LINUX"]
+
+[rules.docker_buildx_cache]
+category = "containers"
+description = "Docker buildx local state; prune with `docker builder prune`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CONTAINER", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "docker builder prune --force", fallback = "NONE" }
+[rules.docker_buildx_cache.match]
+path = ["~/.docker/buildx"]
+
+[rules.orbstack_data]
+category = "containers"
+description = "OrbStack VM data; reclaim with `docker system prune` (never delete directly)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "VM_IMAGE", regen_cost = "EXPENSIVE" }
+action = { kind = "COMMAND", run = "docker system prune --force", fallback = "NONE" }
+[rules.orbstack_data.match]
+path = [
+    "~/.orbstack/data",
+    "~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data",
+]
+os = ["MACOS"]
+
+[rules.podman_storage]
+category = "containers"
+description = "Podman container storage; reclaim with `podman system prune`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CONTAINER", regen_cost = "EXPENSIVE" }
+action = { kind = "COMMAND", run = "podman system prune --force", fallback = "NONE" }
+[rules.podman_storage.match]
+path = ["~/.local/share/containers/storage"]
+os = ["LINUX", "MACOS"]
+
+[rules.podman_machine]
+category = "containers"
+description = "Podman machine VM images; manage with `podman machine`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "VM_IMAGE", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.podman_machine.match]
+path = ["~/.local/share/containers/podman/machine"]
+
+[rules.colima_vm]
+category = "containers"
+description = "Colima / Lima VM disks; reclaim with `docker system prune` inside the VM or `colima delete`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "VM_IMAGE", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.colima_vm.match]
+path = ["~/.colima", "~/.lima"]
+os = ["MACOS", "LINUX"]
+
+[rules.lima_cache]
+category = "containers"
+description = "Lima downloaded VM images cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.lima_cache.match]
+path = ["~/Library/Caches/lima", "~/.cache/lima"]
+os = ["MACOS", "LINUX"]

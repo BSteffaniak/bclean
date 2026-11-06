@@ -1,0 +1,25 @@
+# Homebrew download cache.
+
+[rules.homebrew_cache]
+category = "homebrew"
+description = "Homebrew download cache; `brew cleanup --prune=all` removes all cached downloads and old versions"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "brew cleanup --prune=all", fallback = "NONE" }
+[rules.homebrew_cache.match]
+path = ["~/Library/Caches/Homebrew", "~/.cache/Homebrew"]
+os = ["MACOS", "LINUX"]
+
+[rules.homebrew_logs]
+category = "homebrew"
+description = "Homebrew build logs"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "LOG", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.homebrew_logs.match]
+path = ["~/Library/Logs/Homebrew"]
+os = ["MACOS"]

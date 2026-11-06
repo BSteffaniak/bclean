@@ -1,0 +1,51 @@
+# Go build and module caches.
+
+[rules.go_build_cache]
+category = "go"
+description = "Go build cache (GOCACHE)"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "COMMAND", run = "go clean -cache", fallback = "DELETE" }
+[rules.go_build_cache.match]
+path = [
+    "~/Library/Caches/go-build",
+    "~/.cache/go-build",
+    "%LOCALAPPDATA%/go-build",
+]
+
+[rules.go_mod_cache]
+category = "go"
+description = "Go module download cache (GOPATH/pkg/mod); files are read-only, so only `go clean -modcache` removes it"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "go clean -modcache", fallback = "NONE" }
+[rules.go_mod_cache.match]
+path = ["~/go/pkg/mod"]
+
+[rules.golangci_lint_cache]
+category = "go"
+description = "golangci-lint cache"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "COMMAND", run = "golangci-lint cache clean", fallback = "DELETE" }
+[rules.golangci_lint_cache.match]
+path = [
+    "~/Library/Caches/golangci-lint",
+    "~/.cache/golangci-lint",
+    "%LOCALAPPDATA%/golangci-lint",
+]
+
+[rules.gopls_cache]
+category = "go"
+description = "gopls language server cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.gopls_cache.match]
+path = ["~/Library/Caches/gopls", "~/.cache/gopls", "%LOCALAPPDATA%/gopls"]

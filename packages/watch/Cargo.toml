@@ -11,7 +11,30 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_model = { workspace = true }
+crossbeam-channel = { workspace = true, features = ["std"] }
+log = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, features = ["std"] }
+
+# `notify` is the portable fallback (inotify on Linux, ReadDirectoryChangesW on Windows). macOS
+# uses native FSEvents FFI instead, so notify (and its FSEvents bindings) is not pulled in there.
+[target.'cfg(any(target_os = "linux", windows))'.dependencies]
+notify = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = ["bclean_model/fail-on-warnings"]

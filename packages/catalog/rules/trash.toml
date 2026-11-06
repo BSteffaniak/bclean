@@ -1,0 +1,57 @@
+# Trash / recycle bins: already-deleted content.
+
+[rules.macos_trash]
+category = "trash"
+description = "macOS user Trash (~/.Trash); emptying is irreversible"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TRASH", regen_cost = "FREE" }
+stale = { after = "30d" }
+action = { kind = "DELETE" }
+[rules.macos_trash.match]
+path = ["~/.Trash"]
+os = ["MACOS"]
+
+[rules.macos_volume_trash]
+category = "trash"
+description = "Per-volume Trash on external volumes (/Volumes/*/.Trashes)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TRASH", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.macos_volume_trash.match]
+path = ["/Volumes/*/.Trashes"]
+os = ["MACOS"]
+
+[rules.freedesktop_trash]
+category = "trash"
+description = "Freedesktop Trash (~/.local/share/Trash); emptying is irreversible"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TRASH", regen_cost = "FREE" }
+stale = { after = "30d" }
+action = { kind = "DELETE" }
+[rules.freedesktop_trash.match]
+path = ["~/.local/share/Trash"]
+os = ["LINUX"]
+
+[rules.freedesktop_volume_trash]
+category = "trash"
+description = "Per-volume Freedesktop trash directories (.Trash-<uid>)"
+confidence = "HIGH"
+ephemeral = { kind = "TRASH", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.freedesktop_volume_trash.match]
+name = [".Trash-*"]
+os = ["LINUX"]
+
+[rules.windows_recycle_bin]
+category = "trash"
+description = "Windows Recycle Bin (per volume); empty it from Explorer or `Clear-RecycleBin`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TRASH", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.windows_recycle_bin.match]
+name = ["$Recycle.Bin"]
+os = ["WINDOWS"]

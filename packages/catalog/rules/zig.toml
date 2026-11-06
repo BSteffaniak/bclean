@@ -1,0 +1,33 @@
+# Zig build caches.
+
+[rules.zig_local_cache]
+category = "zig"
+description = "Zig per-project cache (.zig-cache/, legacy zig-cache/) next to build.zig"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.zig_local_cache.match]
+name = [".zig-cache", "zig-cache"]
+sibling_any = ["build.zig", "build.zig.zon"]
+
+[rules.zig_out]
+category = "zig"
+description = "Zig install prefix (zig-out/) next to build.zig"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.zig_out.match]
+name = ["zig-out"]
+sibling_any = ["build.zig"]
+
+[rules.zig_global_cache]
+category = "zig"
+description = "Zig global cache (compiled std, packages)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.zig_global_cache.match]
+path = ["~/.cache/zig", "%LOCALAPPDATA%/zig"]

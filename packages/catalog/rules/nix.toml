@@ -1,0 +1,45 @@
+# Nix store and caches.
+
+[rules.nix_store]
+category = "nix"
+description = "Nix store; reclaim unreferenced paths with `nix-collect-garbage` (never delete store paths directly)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "nix-collect-garbage", fallback = "NONE" }
+[rules.nix_store.match]
+path = ["/nix/store"]
+os = ["MACOS", "LINUX"]
+
+[rules.nix_user_cache]
+category = "nix"
+description = "Nix evaluation and fetcher cache (~/.cache/nix)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.nix_user_cache.match]
+path = ["~/.cache/nix"]
+os = ["MACOS", "LINUX"]
+
+[rules.nix_result_link]
+category = "nix"
+description = "`nix build` result symlinks (GC roots) next to flake.nix or default.nix; removing lets the store paths be collected"
+confidence = "MEDIUM"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.nix_result_link.match]
+kind = "ANY"
+name = ["result", "result-*"]
+sibling_any = ["flake.nix", "default.nix", "shell.nix"]
+
+[rules.direnv_cache]
+category = "nix"
+description = "direnv / nix-direnv per-project cache (.direnv/)"
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.direnv_cache.match]
+name = [".direnv"]
+sibling_any = [".envrc"]

@@ -1,0 +1,159 @@
+# Python bytecode, virtual environments, tool caches, and package manager caches.
+
+[rules.python_pycache]
+category = "python"
+description = "Python bytecode cache (__pycache__/); regenerated on import"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.python_pycache.match]
+name = ["__pycache__"]
+
+[rules.python_venv]
+category = "python"
+description = "Python virtual environment (contains pyvenv.cfg); recreate with your project's tooling"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+stale = { project_idle = "60d" }
+action = { kind = "DELETE" }
+[rules.python_venv.match]
+name = [".venv", "venv", "env", ".env", "virtualenv", ".virtualenv"]
+contains_any = ["pyvenv.cfg"]
+
+[rules.pytest_cache]
+category = "python"
+description = "pytest cache (.pytest_cache/, marked with CACHEDIR.TAG)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.pytest_cache.match]
+name = [".pytest_cache"]
+
+[rules.mypy_cache]
+category = "python"
+description = "mypy incremental cache (.mypy_cache/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.mypy_cache.match]
+name = [".mypy_cache", ".dmypy.json"]
+kind = "ANY"
+
+[rules.ruff_cache]
+category = "python"
+description = "Ruff linter cache (.ruff_cache/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.ruff_cache.match]
+name = [".ruff_cache"]
+
+[rules.pytype_pyre_cache]
+category = "python"
+description = "pytype / pyre / hypothesis caches"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.pytype_pyre_cache.match]
+name = [".pytype", ".pyre", ".hypothesis"]
+
+[rules.python_tox]
+category = "python"
+description = "tox environments (.tox/ next to tox.ini, setup.cfg, or pyproject.toml)"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.python_tox.match]
+name = [".tox"]
+sibling_any = ["tox.ini", "setup.cfg", "pyproject.toml"]
+
+[rules.python_nox]
+category = "python"
+description = "nox sessions (.nox/ next to noxfile.py)"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.python_nox.match]
+name = [".nox"]
+sibling_any = ["noxfile.py"]
+
+[rules.python_build]
+category = "python"
+description = "setuptools build output (build/, *.egg-info) next to setup.py or pyproject.toml"
+confidence = "MEDIUM"
+priority = -5
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.python_build.match]
+name = ["build", "*.egg-info"]
+sibling_any = ["setup.py", "setup.cfg", "pyproject.toml"]
+not_under = ["**/site-packages/**"]
+
+[rules.pip_cache]
+category = "python"
+description = "pip HTTP and wheel cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "pip cache purge", fallback = "DELETE" }
+[rules.pip_cache.match]
+path = ["~/Library/Caches/pip", "~/.cache/pip", "%LOCALAPPDATA%/pip/Cache"]
+
+[rules.uv_cache]
+category = "python"
+description = "uv package cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "uv cache clean", fallback = "NONE" }
+[rules.uv_cache.match]
+path = ["~/.cache/uv", "%LOCALAPPDATA%/uv/cache"]
+
+[rules.poetry_cache]
+category = "python"
+description = "Poetry package and virtualenv cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.poetry_cache.match]
+path = [
+    "~/Library/Caches/pypoetry",
+    "~/.cache/pypoetry",
+    "%LOCALAPPDATA%/pypoetry/Cache",
+]
+
+[rules.pipenv_cache]
+category = "python"
+description = "Pipenv cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.pipenv_cache.match]
+path = [
+    "~/Library/Caches/pipenv",
+    "~/.cache/pipenv",
+    "%LOCALAPPDATA%/pipenv/pipenv/Cache",
+]
+
+[rules.conda_pkgs]
+category = "python"
+description = "Conda package tarball cache; conda clean removes unused packages"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "conda clean --all --yes", fallback = "NONE" }
+[rules.conda_pkgs.match]
+path = [
+    "~/miniconda3/pkgs",
+    "~/anaconda3/pkgs",
+    "~/miniforge3/pkgs",
+    "~/mambaforge/pkgs",
+    "~/.conda/pkgs",
+]

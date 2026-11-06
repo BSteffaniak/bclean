@@ -1,0 +1,36 @@
+# Bazel convenience symlinks and output bases.
+
+[rules.bazel_convenience_links]
+category = "bazel"
+description = "Bazel convenience symlinks (bazel-bin, bazel-out, ...) into the output base; space is reclaimed with `bazel clean`"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.bazel_convenience_links.match]
+kind = "ANY"
+name = ["bazel-*"]
+sibling_any = ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
+
+[rules.bazel_output_base]
+category = "bazel"
+description = "Bazel output user root (all workspaces' output bases; ~/_bazel_<user> on Windows); run `bazel clean --expunge` in each workspace"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.bazel_output_base.match]
+path = ["~/.cache/bazel", "/private/var/tmp/_bazel_*", "~/_bazel_*"]
+
+[rules.bazel_disk_cache]
+category = "bazel"
+description = "Bazel/Bazelisk download and disk caches"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.bazel_disk_cache.match]
+path = [
+    "~/Library/Caches/bazelisk",
+    "~/.cache/bazelisk",
+    "%LOCALAPPDATA%/bazelisk",
+]

@@ -1,0 +1,45 @@
+[package]
+name = "bclean_bmux_plugin"
+description = "bmux plugin surfacing bclean disk-pressure status and alerts"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme = "README.md"
+keywords = ["bclean", "bmux", "plugin", "disk", "monitoring"]
+categories.workspace = true
+
+[lib]
+# `cdylib` is the dynamically loaded bmux native plugin; `rlib` keeps unit tests and static
+# bundling possible.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bclean_client = { workspace = true }
+bclean_config = { workspace = true }
+bclean_model = { workspace = true }
+bclean_protocol = { workspace = true }
+bmux_plugin = { workspace = true }
+bmux_plugin_sdk = { workspace = true }
+bmux_tabs_plugin_api = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+toml = { workspace = true }
+
+[features]
+default = []
+fail-on-warnings = [
+    "bclean_client/fail-on-warnings",
+    "bclean_config/fail-on-warnings",
+    "bclean_model/fail-on-warnings",
+    "bclean_protocol/fail-on-warnings",
+    "bmux_plugin/fail-on-warnings",
+    "bmux_plugin_sdk/fail-on-warnings",
+    "bmux_tabs_plugin_api/fail-on-warnings",
+]
+# Set by a host that compiles this plugin into its binary; suppresses the dynamic exports.
+static-bundled = []

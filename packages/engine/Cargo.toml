@@ -1,0 +1,56 @@
+[package]
+name = "bclean_engine"
+description = "bclean core engine shared by the daemon and local (--no-daemon) mode"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bclean_actions = { workspace = true }
+bclean_alerts = { workspace = true }
+bclean_config = { workspace = true }
+bclean_index = { workspace = true }
+bclean_model = { workspace = true }
+bclean_policy = { workspace = true }
+bclean_protocol = { workspace = true }
+bclean_rules = { workspace = true }
+bclean_scan = { workspace = true }
+bclean_staleness = { workspace = true }
+bclean_tree = { workspace = true }
+bclean_watch = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+# HTTPS webhooks on Linux need rustls (macOS/Windows use the platform TLS stack).
+[target.'cfg(target_os = "linux")'.dependencies]
+bclean_alerts = { workspace = true, features = ["rustls"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
+fail-on-warnings = [
+    "bclean_actions/fail-on-warnings",
+    "bclean_alerts/fail-on-warnings",
+    "bclean_config/fail-on-warnings",
+    "bclean_index/fail-on-warnings",
+    "bclean_model/fail-on-warnings",
+    "bclean_policy/fail-on-warnings",
+    "bclean_protocol/fail-on-warnings",
+    "bclean_rules/fail-on-warnings",
+    "bclean_scan/fail-on-warnings",
+    "bclean_staleness/fail-on-warnings",
+    "bclean_tree/fail-on-warnings",
+    "bclean_watch/fail-on-warnings",
+]

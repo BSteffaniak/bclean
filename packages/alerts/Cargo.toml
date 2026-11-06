@@ -11,7 +11,28 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_model = { workspace = true }
+log = { workspace = true }
+notify-rust = { workspace = true, features = ["z"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# macOS and Windows use the platform TLS stack (Security.framework / SChannel): no C build,
+# so cross-target `cargo check` works. Linux has no pure-Rust option that cross-checks without a
+# C toolchain, so HTTPS there is behind the `rustls` feature (ring).
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+ureq = { workspace = true, features = ["native-tls"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = ["bclean_model/fail-on-warnings"]
+# HTTPS webhooks via rustls + ring (needed on Linux; requires a C compiler for the target).
+rustls = ["ureq/rustls"]

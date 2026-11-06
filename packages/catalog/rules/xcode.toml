@@ -1,0 +1,171 @@
+# Xcode, Swift Package Manager, simulators, and Apple-platform dependency managers.
+
+[rules.xcode_derived_data]
+category = "xcode"
+description = "Xcode DerivedData for one project (build products and indexes)"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.xcode_derived_data.match]
+path = ["~/Library/Developer/Xcode/DerivedData/*"]
+os = ["MACOS"]
+
+[rules.xcode_archives]
+category = "xcode"
+description = "Xcode archives (.xcarchive): contain dSYMs needed to symbolicate shipped builds; review before removing"
+confidence = "HIGH"
+priority = 10
+stale = { after = "365d" }
+action = { kind = "REPORT" }
+[rules.xcode_archives.match]
+path = ["~/Library/Developer/Xcode/Archives"]
+os = ["MACOS"]
+
+[rules.xcode_device_support]
+category = "xcode"
+description = "Device symbol caches copied from connected devices (iOS/watchOS/tvOS/visionOS DeviceSupport); re-copied when a device connects"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "EXPENSIVE" }
+stale = { after = "90d" }
+action = { kind = "DELETE" }
+[rules.xcode_device_support.match]
+path = [
+    "~/Library/Developer/Xcode/iOS DeviceSupport/*",
+    "~/Library/Developer/Xcode/watchOS DeviceSupport/*",
+    "~/Library/Developer/Xcode/tvOS DeviceSupport/*",
+    "~/Library/Developer/Xcode/visionOS DeviceSupport/*",
+    "~/Library/Developer/Xcode/macOS DeviceSupport/*",
+]
+os = ["MACOS"]
+
+[rules.xcode_products]
+category = "xcode"
+description = "Xcode exported products and previews caches"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.xcode_products.match]
+path = [
+    "~/Library/Developer/Xcode/Products",
+    "~/Library/Developer/Xcode/UserData/Previews",
+    "~/Library/Developer/Xcode/UserData/IB Support",
+]
+os = ["MACOS"]
+
+[rules.xcode_ios_device_logs]
+category = "xcode"
+description = "Device logs collected by Xcode"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "LOG", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.xcode_ios_device_logs.match]
+path = ["~/Library/Developer/Xcode/iOS Device Logs"]
+os = ["MACOS"]
+
+[rules.core_simulator_devices]
+category = "xcode"
+description = "Simulator devices; `xcrun simctl delete unavailable` removes devices for runtimes no longer installed"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "SIMULATOR", regen_cost = "EXPENSIVE" }
+action = { kind = "COMMAND", run = "xcrun simctl delete unavailable", fallback = "NONE" }
+[rules.core_simulator_devices.match]
+path = ["~/Library/Developer/CoreSimulator/Devices"]
+os = ["MACOS"]
+
+[rules.core_simulator_caches]
+category = "xcode"
+description = "CoreSimulator dyld and other caches"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.core_simulator_caches.match]
+path = ["~/Library/Developer/CoreSimulator/Caches"]
+os = ["MACOS"]
+
+[rules.core_simulator_runtimes]
+category = "xcode"
+description = "Installed simulator runtimes; manage via Xcode settings or `xcrun simctl runtime`"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "SIMULATOR", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.core_simulator_runtimes.match]
+path = [
+    "/Library/Developer/CoreSimulator/Volumes",
+    "/Library/Developer/CoreSimulator/Images",
+]
+os = ["MACOS"]
+
+[rules.swiftpm_build]
+category = "xcode"
+description = "Swift Package Manager build directory (.build/ next to Package.swift)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "COMMAND", run = "swift package clean", fallback = "DELETE" }
+[rules.swiftpm_build.match]
+name = [".build"]
+sibling_any = ["Package.swift"]
+
+[rules.swiftpm_cache]
+category = "xcode"
+description = "Swift Package Manager global repository cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.swiftpm_cache.match]
+path = ["~/Library/Caches/org.swift.swiftpm", "~/.cache/org.swift.swiftpm"]
+
+[rules.cocoapods_cache]
+category = "xcode"
+description = "CocoaPods download cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "pod cache clean --all", fallback = "DELETE" }
+[rules.cocoapods_cache.match]
+path = ["~/Library/Caches/CocoaPods"]
+os = ["MACOS"]
+
+[rules.cocoapods_pods]
+category = "xcode"
+description = "Installed CocoaPods (Pods/ next to Podfile); reinstall with `pod install` (some projects commit Pods/)"
+confidence = "MEDIUM"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+stale = { project_idle = "30d" }
+action = { kind = "TRASH" }
+[rules.cocoapods_pods.match]
+name = ["Pods"]
+sibling_all = ["Podfile", "Podfile.lock"]
+
+[rules.carthage_build]
+category = "xcode"
+description = "Carthage build output (Carthage/Build next to Cartfile)"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "EXPENSIVE" }
+action = { kind = "DELETE" }
+[rules.carthage_build.match]
+name = ["Carthage"]
+sibling_any = ["Cartfile", "Cartfile.resolved"]
+
+[rules.carthage_cache]
+category = "xcode"
+description = "Carthage global cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.carthage_cache.match]
+path = ["~/Library/Caches/org.carthage.CarthageKit"]
+os = ["MACOS"]

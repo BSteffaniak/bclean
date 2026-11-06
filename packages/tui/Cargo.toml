@@ -10,12 +10,32 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[[example]]
+name = "demo"
+
 [dependencies]
+bclean_model = { workspace = true }
+bclean_tree = { workspace = true }
 bmux_keyboard = { workspace = true }
 bmux_tui = { workspace = true, features = ["crossterm"] }
-bmux_tui_components = { workspace = true }
+bmux_tui_components = { workspace = true, features = [
+    "breadcrumbs",
+    "key-hint-bar",
+    "labeled-details",
+    "modal-frame",
+    "pane",
+    "progress-bar",
+    "scrollbar",
+    "status-bar",
+    "tab-bar",
+] }
 bmux_tui_runtime = { workspace = true, features = ["crossterm"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_model/fail-on-warnings",
+    "bclean_tree/fail-on-warnings",
+]

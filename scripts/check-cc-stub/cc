@@ -1,0 +1,14 @@
+#!/bin/sh
+# Check-only C compiler stub: creates the requested object file without compiling.
+out=""
+prev=""
+for a in "$@"; do
+  case "$a" in
+    -o*) [ "$a" != "-o" ] && out="${a#-o}" ;;
+    -Fo*) out="${a#-Fo}" ;;
+  esac
+  [ "$prev" = "-o" ] && out="$a"
+  prev="$a"
+done
+[ -n "$out" ] && : > "$out"
+exit 0

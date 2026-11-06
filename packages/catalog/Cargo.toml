@@ -11,7 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_model = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+toml = { workspace = true, features = ["parse", "serde"] }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = ["bclean_model/fail-on-warnings"]

@@ -1,0 +1,91 @@
+# IDE and editor caches. Project settings directories such as .idea/ and .vscode/ are NOT
+# ephemeral and are never matched.
+
+[rules.jetbrains_caches]
+category = "ide"
+description = "JetBrains IDE system caches and indexes (rebuilt on next start)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+stale = { after = "60d" }
+action = { kind = "DELETE" }
+[rules.jetbrains_caches.match]
+path = [
+    "~/Library/Caches/JetBrains",
+    "~/.cache/JetBrains",
+    "%LOCALAPPDATA%/JetBrains/*",
+]
+
+[rules.vscode_caches]
+category = "ide"
+description = "VS Code family (Code, Insiders, VSCodium, Cursor, Windsurf) caches, cached extension downloads, and logs"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.vscode_caches.match]
+name = [
+    "Cache",
+    "CachedData",
+    "CachedExtensionVSIXs",
+    "CachedProfilesData",
+    "Code Cache",
+    "GPUCache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "logs",
+]
+path = [
+    "~/Library/Application Support/Code/*",
+    "~/Library/Application Support/Code - Insiders/*",
+    "~/Library/Application Support/VSCodium/*",
+    "~/Library/Application Support/Cursor/*",
+    "~/Library/Application Support/Windsurf/*",
+    "~/.config/Code/*",
+    "~/.config/Code - Insiders/*",
+    "~/.config/VSCodium/*",
+    "~/.config/Cursor/*",
+    "~/.config/Windsurf/*",
+    "%APPDATA%/Code/*",
+    "%APPDATA%/Code - Insiders/*",
+    "%APPDATA%/VSCodium/*",
+    "%APPDATA%/Cursor/*",
+    "%APPDATA%/Windsurf/*",
+]
+
+[rules.vscode_update_cache]
+category = "ide"
+description = "Downloaded VS Code / Cursor updates (ShipIt caches)"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TEMP", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.vscode_update_cache.match]
+path = [
+    "~/Library/Caches/com.microsoft.VSCode.ShipIt",
+    "~/Library/Caches/com.microsoft.VSCodeInsiders.ShipIt",
+    "~/Library/Caches/com.todesktop.230313mzl4w4u92.ShipIt",
+]
+os = ["MACOS"]
+
+[rules.android_studio_avd]
+category = "ide"
+description = "Android emulator virtual devices (~/.android/avd); recreate from AVD Manager"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "SIMULATOR", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.android_studio_avd.match]
+path = ["~/.android/avd"]
+
+[rules.android_build_cache]
+category = "ide"
+description = "Android Gradle plugin and emulator caches (~/.android/cache, ~/.android/build-cache)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.android_build_cache.match]
+path = ["~/.android/cache", "~/.android/build-cache"]

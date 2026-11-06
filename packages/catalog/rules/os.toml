@@ -1,0 +1,188 @@
+# Operating-system level caches, logs, temporary files, and crash dumps.
+# Catch-alls match the *children* of cache roots with negative priority so specific
+# per-tool rules (priority 10) win and the classifier still sees individual caches.
+
+[rules.macos_user_caches]
+category = "os"
+description = "Per-application cache directory under ~/Library/Caches (apps recreate these)"
+confidence = "MEDIUM"
+priority = -10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.macos_user_caches.match]
+kind = "ANY"
+path = ["~/Library/Caches/*"]
+os = ["MACOS"]
+
+[rules.macos_user_logs]
+category = "os"
+description = "Per-application logs under ~/Library/Logs"
+confidence = "HIGH"
+priority = -10
+ephemeral = { kind = "LOG", regen_cost = "FREE" }
+stale = { after = "14d" }
+action = { kind = "DELETE" }
+[rules.macos_user_logs.match]
+kind = "ANY"
+path = ["~/Library/Logs/*"]
+os = ["MACOS"]
+
+[rules.macos_diagnostic_reports]
+category = "os"
+description = "Crash and diagnostic reports (~/Library/Logs/DiagnosticReports)"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CRASH_DUMP", regen_cost = "FREE" }
+stale = { after = "30d" }
+action = { kind = "DELETE" }
+[rules.macos_diagnostic_reports.match]
+path = ["~/Library/Logs/DiagnosticReports", "~/Library/Logs/CrashReporter"]
+os = ["MACOS"]
+
+[rules.macos_saved_state]
+category = "os"
+description = "Saved application window state (~/Library/Saved Application State)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "OTHER", regen_cost = "FREE" }
+stale = { after = "90d" }
+action = { kind = "DELETE" }
+[rules.macos_saved_state.match]
+path = ["~/Library/Saved Application State/*"]
+os = ["MACOS"]
+
+[rules.macos_var_folders]
+category = "os"
+description = "Per-user temporary and cache folders managed by macOS (/private/var/folders); cleaned by the OS"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TEMP", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.macos_var_folders.match]
+path = ["/private/var/folders"]
+os = ["MACOS"]
+
+[rules.xdg_user_caches]
+category = "os"
+description = "Per-application cache directory under ~/.cache (XDG cache home)"
+confidence = "MEDIUM"
+priority = -10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.xdg_user_caches.match]
+kind = "ANY"
+path = ["~/.cache/*"]
+os = ["LINUX"]
+
+[rules.thumbnail_cache]
+category = "os"
+description = "Freedesktop thumbnail cache"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.thumbnail_cache.match]
+path = ["~/.cache/thumbnails", "~/.thumbnails"]
+os = ["LINUX"]
+
+[rules.linux_crash_dumps]
+category = "os"
+description = "System crash reports (/var/crash, systemd-coredump)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CRASH_DUMP", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.linux_crash_dumps.match]
+kind = "ANY"
+path = ["/var/crash/*", "/var/lib/systemd/coredump/*"]
+os = ["LINUX"]
+
+[rules.linux_journal]
+category = "os"
+description = "systemd journal; shrink with `journalctl --vacuum-time=2weeks` (needs privileges)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "LOG", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.linux_journal.match]
+path = ["/var/log/journal"]
+os = ["LINUX"]
+
+[rules.windows_temp]
+category = "os"
+description = "Per-user temporary files (%LOCALAPPDATA%/Temp)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TEMP", regen_cost = "FREE" }
+stale = { after = "7d" }
+action = { kind = "DELETE" }
+[rules.windows_temp.match]
+kind = "ANY"
+path = ["%LOCALAPPDATA%/Temp/*"]
+os = ["WINDOWS"]
+
+[rules.windows_crash_dumps]
+category = "os"
+description = "Application crash dumps (%LOCALAPPDATA%/CrashDumps) and Windows Error Reporting archives"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CRASH_DUMP", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.windows_crash_dumps.match]
+kind = "ANY"
+path = [
+    "%LOCALAPPDATA%/CrashDumps/*",
+    "%LOCALAPPDATA%/Microsoft/Windows/WER/ReportArchive/*",
+    "%LOCALAPPDATA%/Microsoft/Windows/WER/ReportQueue/*",
+]
+os = ["WINDOWS"]
+
+[rules.windows_inet_cache]
+category = "os"
+description = "WinINet / legacy IE and Edge HTML cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "BROWSER_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.windows_inet_cache.match]
+path = ["%LOCALAPPDATA%/Microsoft/Windows/INetCache"]
+os = ["WINDOWS"]
+
+[rules.windows_explorer_thumbcache]
+category = "os"
+description = "Explorer thumbnail and icon cache databases"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "REPORT" }
+[rules.windows_explorer_thumbcache.match]
+kind = "FILE"
+name = ["thumbcache_*.db", "iconcache_*.db"]
+path = ["%LOCALAPPDATA%/Microsoft/Windows/Explorer/*"]
+os = ["WINDOWS"]
+
+[rules.windows_system_temp]
+category = "os"
+description = "System temporary directory (%SystemRoot%/Temp); requires administrator rights"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TEMP", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.windows_system_temp.match]
+path = ["%SystemRoot%/Temp"]
+os = ["WINDOWS"]
+
+[rules.windows_minidumps]
+category = "os"
+description = "Kernel crash dumps (%SystemRoot%/Minidump, MEMORY.DMP); requires administrator rights"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "CRASH_DUMP", regen_cost = "FREE" }
+action = { kind = "REPORT" }
+[rules.windows_minidumps.match]
+kind = "ANY"
+path = ["%SystemRoot%/Minidump", "%SystemRoot%/MEMORY.DMP"]
+os = ["WINDOWS"]

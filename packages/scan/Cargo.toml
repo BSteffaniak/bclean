@@ -11,7 +11,33 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_model = { workspace = true }
+bclean_tree = { workspace = true }
+crossbeam-channel = { workspace = true, features = ["std"] }
+crossbeam-deque = { workspace = true, features = ["std"] }
+globset = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_model/fail-on-warnings",
+    "bclean_tree/fail-on-warnings",
+]

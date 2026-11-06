@@ -1,0 +1,129 @@
+# Gradle, Maven, and other JVM build output and caches.
+
+[rules.gradle_build]
+category = "jvm"
+description = "Gradle build output (build/ next to build.gradle(.kts) or settings.gradle(.kts))"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.gradle_build.match]
+name = ["build"]
+sibling_any = [
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+]
+
+[rules.gradle_project_cache]
+category = "jvm"
+description = "Gradle per-project cache (.gradle/ next to a Gradle build script)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.gradle_project_cache.match]
+name = [".gradle"]
+sibling_any = [
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "gradlew",
+]
+
+[rules.gradle_user_caches]
+category = "jvm"
+description = "Gradle user caches (~/.gradle/caches): dependencies, transforms, build cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.gradle_user_caches.match]
+path = ["~/.gradle/caches"]
+
+[rules.gradle_wrapper_dists]
+category = "jvm"
+description = "Downloaded Gradle distributions (~/.gradle/wrapper/dists)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.gradle_wrapper_dists.match]
+path = ["~/.gradle/wrapper/dists/*"]
+
+[rules.gradle_daemon_logs]
+category = "jvm"
+description = "Gradle daemon logs and registry (~/.gradle/daemon)"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "LOG", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.gradle_daemon_logs.match]
+path = ["~/.gradle/daemon"]
+
+[rules.maven_repository]
+category = "jvm"
+description = "Maven local repository (~/.m2/repository); may contain locally installed artifacts"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "TRASH" }
+[rules.maven_repository.match]
+path = ["~/.m2/repository"]
+
+[rules.maven_target]
+category = "jvm"
+description = "Maven build output (target/ next to pom.xml)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "COMMAND", run = "mvn -q clean", fallback = "DELETE" }
+[rules.maven_target.match]
+name = ["target"]
+sibling_any = ["pom.xml"]
+
+[rules.sbt_target]
+category = "jvm"
+description = "sbt build output (target/ and project/target next to build.sbt)"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.sbt_target.match]
+name = ["target", ".bsp", ".bloop", ".metals"]
+sibling_any = ["build.sbt"]
+
+[rules.coursier_cache]
+category = "jvm"
+description = "Coursier (sbt/Scala) artifact cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.coursier_cache.match]
+path = [
+    "~/Library/Caches/Coursier",
+    "~/.cache/coursier",
+    "%LOCALAPPDATA%/Coursier/cache",
+]
+
+[rules.kotlin_daemon]
+category = "jvm"
+description = "Kotlin compile daemon state and logs"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "FREE" }
+action = { kind = "DELETE" }
+[rules.kotlin_daemon.match]
+path = [
+    "~/Library/Application Support/kotlin/daemon",
+    "~/.local/share/kotlin/daemon",
+    "%LOCALAPPDATA%/kotlin/daemon",
+]

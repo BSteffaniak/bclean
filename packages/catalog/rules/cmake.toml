@@ -1,0 +1,67 @@
+# CMake build trees (identified by CMakeCache.txt) and related C/C++ tool caches.
+
+[rules.cmake_build_dir]
+category = "cmake"
+description = "CMake build tree (contains CMakeCache.txt); regenerate by re-running cmake configure and build"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.cmake_build_dir.match]
+name = [
+    "build",
+    "build-*",
+    "build_*",
+    "_build",
+    "cmake-build-*",
+    "out",
+    "builddir",
+]
+contains_any = ["CMakeCache.txt"]
+not_under = ["**/node_modules/**"]
+
+[rules.meson_build_dir]
+category = "cmake"
+description = "Meson build directory (contains meson-private/)"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.meson_build_dir.match]
+name = ["build", "build-*", "builddir", "_build"]
+contains_any = ["meson-private"]
+
+[rules.ccache_cache]
+category = "cmake"
+description = "ccache compiler cache; `ccache -C` clears it"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "COMMAND", run = "ccache -C", fallback = "DELETE" }
+[rules.ccache_cache.match]
+path = [
+    "~/Library/Caches/ccache",
+    "~/.cache/ccache",
+    "~/.ccache",
+    "%LOCALAPPDATA%/ccache",
+]
+
+[rules.vcpkg_cache]
+category = "cmake"
+description = "vcpkg binary cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "EXPENSIVE" }
+action = { kind = "DELETE" }
+[rules.vcpkg_cache.match]
+path = ["~/.cache/vcpkg", "%LOCALAPPDATA%/vcpkg/archives"]
+
+[rules.conan_cache]
+category = "cmake"
+description = "Conan package cache; `conan remove '*' -c` clears it"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "EXPENSIVE" }
+action = { kind = "REPORT" }
+[rules.conan_cache.match]
+path = ["~/.conan2/p", "~/.conan/data"]

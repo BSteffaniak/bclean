@@ -1,0 +1,47 @@
+# bmux plugin manifest for the bclean integration.
+#
+# This is the manifest compiled into the plugin (`export_plugin!`). An installed copy also needs
+# `entry` pointing at the built library; see README.md (or `scripts/install.sh`).
+description = "bclean disk-pressure status, alerts, and TUI launcher"
+homepage = "https://github.com/BSteffaniak/bclean"
+id = "bclean"
+name = "bclean"
+optional_capabilities = ["bmux.tabs.write"]
+owns_namespaces = ["bclean"]
+runtime = "native"
+version = "0.1.0"
+
+[[commands]]
+expose_in_cli = true
+name = "status"
+path = ["bclean", "status"]
+summary = "Show bclean daemon, volume, and alert details"
+
+[[commands]]
+expose_in_cli = true
+name = "segment"
+path = ["bclean", "segment"]
+summary = "Print the compact disk-pressure segment (e.g. for a shell prompt)"
+
+[[commands.arguments]]
+kind = "boolean"
+long = "ansi"
+name = "ansi"
+summary = "Color the segment with ANSI escapes"
+
+[[commands]]
+expose_in_cli = true
+name = "ack-alerts"
+path = ["bclean", "ack-alerts"]
+summary = "Acknowledge all active bclean alerts"
+
+[[commands]]
+expose_in_cli = true
+name = "open"
+path = ["bclean", "open"]
+summary = "Open a pane running the bclean TUI"
+
+[[dependencies]]
+plugin_id = "bmux.tabs"
+required = false
+version_req = ">=0.0.1-alpha.0"

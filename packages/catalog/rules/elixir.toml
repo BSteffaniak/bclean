@@ -1,0 +1,66 @@
+# Elixir / Erlang build output and package caches.
+
+[rules.mix_build]
+category = "elixir"
+description = "Mix build output (_build/ next to mix.exs)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.mix_build.match]
+name = ["_build"]
+sibling_any = ["mix.exs"]
+
+[rules.mix_deps]
+category = "elixir"
+description = "Mix dependencies (deps/ next to mix.exs and mix.lock); restore with `mix deps.get`"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.mix_deps.match]
+name = ["deps"]
+sibling_all = ["mix.exs", "mix.lock"]
+
+[rules.elixir_ls]
+category = "elixir"
+description = "ElixirLS / Lexical language server caches (.elixir_ls/, .lexical/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.elixir_ls.match]
+name = [".elixir_ls", ".lexical", ".elixir-tools"]
+sibling_any = ["mix.exs"]
+
+[rules.rebar3_build]
+category = "elixir"
+description = "rebar3 build output (_build/ next to rebar.config)"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.rebar3_build.match]
+name = ["_build"]
+sibling_any = ["rebar.config"]
+
+[rules.hex_cache]
+category = "elixir"
+description = "Hex package cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.hex_cache.match]
+path = ["~/.hex/packages"]
+
+[rules.rebar3_cache]
+category = "elixir"
+description = "rebar3 global cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.rebar3_cache.match]
+path = ["~/.cache/rebar3"]

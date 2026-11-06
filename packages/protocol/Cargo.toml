@@ -11,7 +11,20 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_model = { workspace = true }
+interprocess = { workspace = true, features = ["tokio"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "rt-multi-thread",
+] }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = ["bclean_model/fail-on-warnings"]

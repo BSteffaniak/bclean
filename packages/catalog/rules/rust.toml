@@ -1,0 +1,69 @@
+# Rust / Cargo build output and package caches.
+
+[rules.cargo_target]
+category = "rust"
+description = "Cargo build output (target/ next to Cargo.toml)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "COMMAND", run = "cargo clean", cwd = "{parent}", fallback = "DELETE" }
+[rules.cargo_target.match]
+name = ["target"]
+sibling_any = ["Cargo.toml"]
+not_under = ["~/.cargo/**"]
+
+[rules.cargo_registry_cache]
+category = "rust"
+description = "Downloaded crate archives (~/.cargo/registry/cache); re-downloaded on demand"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.cargo_registry_cache.match]
+path = ["~/.cargo/registry/cache"]
+
+[rules.cargo_registry_src]
+category = "rust"
+description = "Extracted crate sources (~/.cargo/registry/src); re-extracted from the cache on demand"
+auto = true
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.cargo_registry_src.match]
+path = ["~/.cargo/registry/src"]
+
+[rules.cargo_git_checkouts]
+category = "rust"
+description = "Checked-out git dependencies (~/.cargo/git/checkouts); recreated from the git db on demand"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.cargo_git_checkouts.match]
+path = ["~/.cargo/git/checkouts"]
+
+[rules.cargo_git_db]
+category = "rust"
+description = "Bare git dependency repositories (~/.cargo/git/db); re-cloned on demand"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.cargo_git_db.match]
+path = ["~/.cargo/git/db"]
+
+[rules.sccache_cache]
+category = "rust"
+description = "sccache compiler cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.sccache_cache.match]
+path = [
+    "~/Library/Caches/Mozilla.sccache",
+    "~/.cache/sccache",
+    "%LOCALAPPDATA%/Mozilla/sccache",
+]

@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/*"]
+members = ["packages/*", "plugins/*"]
 resolver = "3"
 
 [workspace.package]
@@ -21,6 +21,7 @@ bclean_cli = { version = "0.1.0", path = "packages/cli", default-features = fals
 bclean_client = { version = "0.1.0", path = "packages/client", default-features = false }
 bclean_config = { version = "0.1.0", path = "packages/config", default-features = false }
 bclean_daemon = { version = "0.1.0", path = "packages/daemon", default-features = false }
+bclean_engine = { version = "0.1.0", path = "packages/engine", default-features = false }
 bclean_index = { version = "0.1.0", path = "packages/index", default-features = false }
 bclean_model = { version = "0.1.0", path = "packages/model", default-features = false }
 bclean_policy = { version = "0.1.0", path = "packages/policy", default-features = false }
@@ -35,6 +36,9 @@ bclean_watch = { version = "0.1.0", path = "packages/watch", default-features = 
 # bmux ecosystem
 bmux_config_composition = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_keyboard = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_plugin = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_plugin_sdk = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_tabs_plugin_api = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_tui = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_tui_components = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_tui_runtime = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
@@ -50,19 +54,29 @@ clap = { version = "4.6.7", default-features = false, features = [
 
 # Serialization
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
-serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
-toml = { version = "1.2.1", default-features = false, features = ["parse", "serde"] }
+serde_json = { version = "1.0.154", default-features = false, features = [
+    "std",
+] }
+toml = { version = "1.2.1", default-features = false, features = [
+    "parse",
+    "serde",
+] }
 
 # Error handling
 anyhow = { version = "1.0.100", default-features = false }
 thiserror = { version = "2.0.21", default-features = false }
 
 # Async / concurrency
-crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
-crossbeam-deque = { version = "0.8.8", default-features = false, features = ["std"] }
+crossbeam-channel = { version = "0.5.17", default-features = false, features = [
+    "std",
+] }
+crossbeam-deque = { version = "0.8.8", default-features = false, features = [
+    "std",
+] }
 parking_lot = { version = "0.13.0", default-features = false }
 rayon = { version = "1.12.0", default-features = false }
 tokio = { version = "1.54.1", default-features = false }
+interprocess = { version = "2.4.7", default-features = false }
 
 # Filesystem / platform
 dirs = { version = "7.0.0", default-features = false }
@@ -79,7 +93,14 @@ windows-sys = { version = "0.61.2", default-features = false }
 gix = { version = "0.90.0", default-features = false }
 
 # Persistence
-rusqlite = { version = "0.41.1", default-features = false }
+switchy_database = { version = "0.5.0", default-features = false, features = [
+    "schema",
+    "sqlite-rusqlite",
+] }
+switchy_database_connection = { version = "0.5.0", default-features = false, features = [
+    "sqlite-rusqlite",
+] }
+xxhash-rust = { version = "0.8.19", default-features = false }
 
 # Alerts
 notify-rust = { version = "4.18.2", default-features = false }
@@ -90,6 +111,8 @@ bytesize = { version = "2.7.0", default-features = false }
 chrono = { version = "0.4.45", default-features = false }
 cron = { version = "0.17.0", default-features = false }
 memchr = { version = "2.8.3", default-features = false }
+flate2 = { version = "1.1.11", default-features = false }
+tar = { version = "0.4.46", default-features = false }
 
 # Logging
 log = { version = "0.4.35", default-features = false }
@@ -108,3 +131,28 @@ strip = "symbols"
 [profile.bench]
 debug = true
 strip = "none"
+
+[patch.crates-io]
+# Follow MoosicBox master for every switchy/moosicbox crate (direct or via bmux) so they unify.
+moosicbox_assert = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+moosicbox_profiles = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_async = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_async_macros = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_database = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_database_connection = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_env = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_fs = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_http = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_http_models = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_mdns = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_random = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_schema = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_tcp = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_telemetry = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_time = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_upnp = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_uuid = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_web_server = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_web_server_core = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }
+switchy_web_server_cors = { git = "https://github.com/MoosicBox/MoosicBox", branch = "master" }

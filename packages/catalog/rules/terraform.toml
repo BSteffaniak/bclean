@@ -1,0 +1,32 @@
+# Terraform / OpenTofu provider and module caches.
+
+[rules.terraform_dir]
+category = "terraform"
+description = "Terraform working directory (.terraform/ next to *.tf): providers and modules; restore with `terraform init`. May hold local state for some backends"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+stale = { project_idle = "30d" }
+action = { kind = "TRASH" }
+[rules.terraform_dir.match]
+name = [".terraform"]
+sibling_any = ["*.tf", "*.tofu", "*.tf.json"]
+
+[rules.terragrunt_cache]
+category = "terraform"
+description = "Terragrunt cache (.terragrunt-cache/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.terragrunt_cache.match]
+name = [".terragrunt-cache"]
+
+[rules.terraform_plugin_cache]
+category = "terraform"
+description = "Shared Terraform provider plugin cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.terraform_plugin_cache.match]
+path = ["~/.terraform.d/plugin-cache", "%APPDATA%/terraform.d/plugin-cache"]

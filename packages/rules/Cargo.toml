@@ -11,7 +11,25 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_config = { workspace = true }
+bclean_model = { workspace = true }
+bclean_staleness = { workspace = true }
+bclean_tree = { workspace = true }
+gix = { workspace = true, features = ["sha1"] }
+globset = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+bclean_catalog = { workspace = true }
+filetime = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_config/fail-on-warnings",
+    "bclean_model/fail-on-warnings",
+    "bclean_staleness/fail-on-warnings",
+    "bclean_tree/fail-on-warnings",
+]

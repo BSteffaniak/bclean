@@ -11,7 +11,20 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+bclean_model = { workspace = true }
+bclean_tree = { workspace = true }
+gix = { workspace = true, features = ["revision", "sha1"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+filetime = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = []
-fail-on-warnings = []
+fail-on-warnings = [
+    "bclean_model/fail-on-warnings",
+    "bclean_tree/fail-on-warnings",
+]

@@ -1,0 +1,192 @@
+# Node.js / JavaScript dependencies, framework build caches, and package manager caches.
+
+[rules.node_modules]
+category = "node"
+description = "Installed npm/pnpm/yarn/bun dependencies (node_modules/ next to package.json)"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "NETWORK" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.node_modules.match]
+name = ["node_modules"]
+sibling_any = ["package.json"]
+
+[rules.next_build]
+category = "node"
+description = "Next.js build output and cache (.next/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "14d" }
+action = { kind = "DELETE" }
+[rules.next_build.match]
+name = [".next"]
+sibling_any = ["package.json", "next.config.*"]
+not_under = ["**/node_modules/**"]
+
+[rules.nuxt_build]
+category = "node"
+description = "Nuxt build output (.nuxt/, .output/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "14d" }
+action = { kind = "DELETE" }
+[rules.nuxt_build.match]
+name = [".nuxt", ".output"]
+sibling_any = ["nuxt.config.*"]
+not_under = ["**/node_modules/**"]
+
+[rules.svelte_kit_build]
+category = "node"
+description = "SvelteKit generated output (.svelte-kit/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.svelte_kit_build.match]
+name = [".svelte-kit"]
+sibling_any = ["package.json"]
+not_under = ["**/node_modules/**"]
+
+[rules.turbo_cache]
+category = "node"
+description = "Turborepo local cache (.turbo/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.turbo_cache.match]
+name = [".turbo"]
+sibling_any = ["package.json", "turbo.json"]
+
+[rules.parcel_cache]
+category = "node"
+description = "Parcel bundler cache (.parcel-cache/)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.parcel_cache.match]
+name = [".parcel-cache"]
+sibling_any = ["package.json"]
+
+[rules.angular_cache]
+category = "node"
+description = "Angular CLI workspace cache (.angular/, holds only the build cache)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.angular_cache.match]
+name = [".angular"]
+sibling_any = ["angular.json"]
+not_under = ["**/node_modules/**"]
+
+[rules.eslint_jest_caches]
+category = "node"
+description = "Tool caches stored next to package.json (.eslintcache dirs, .jest-cache, .vite, .vitest)"
+auto = true
+confidence = "HIGH"
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "CHEAP" }
+action = { kind = "DELETE" }
+[rules.eslint_jest_caches.match]
+name = [".jest-cache", ".vite", ".vitest", ".docusaurus", ".expo", ".nx"]
+sibling_any = ["package.json"]
+not_under = ["**/node_modules/**"]
+
+[rules.node_dist]
+category = "node"
+description = "JavaScript build output (dist/, out/, build/) next to package.json; may be committed in some projects"
+confidence = "MEDIUM"
+priority = -5
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "TRASH" }
+[rules.node_dist.match]
+name = ["dist", "out"]
+sibling_any = ["package.json"]
+not_under = ["**/node_modules/**"]
+
+[rules.npm_cache]
+category = "node"
+description = "npm content-addressed cache (~/.npm/_cacache)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "npm cache clean --force", fallback = "DELETE" }
+[rules.npm_cache.match]
+path = ["~/.npm/_cacache", "%LOCALAPPDATA%/npm-cache/_cacache"]
+
+[rules.npm_npx_cache]
+category = "node"
+description = "npx package cache (~/.npm/_npx)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.npm_npx_cache.match]
+path = ["~/.npm/_npx", "%LOCALAPPDATA%/npm-cache/_npx"]
+
+[rules.pnpm_store]
+category = "node"
+description = "pnpm content-addressable store; prune removes packages unreferenced by any project"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "pnpm store prune", fallback = "NONE" }
+[rules.pnpm_store.match]
+path = [
+    "~/Library/pnpm/store",
+    "~/.local/share/pnpm/store",
+    "%LOCALAPPDATA%/pnpm/store",
+]
+
+[rules.yarn_cache]
+category = "node"
+description = "Yarn global cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "yarn cache clean", fallback = "DELETE" }
+[rules.yarn_cache.match]
+path = [
+    "~/Library/Caches/Yarn",
+    "~/.cache/yarn",
+    "%LOCALAPPDATA%/Yarn/Cache",
+    "~/.yarn/berry/cache",
+]
+
+[rules.bun_cache]
+category = "node"
+description = "Bun install cache (~/.bun/install/cache)"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "bun pm cache rm", fallback = "DELETE" }
+[rules.bun_cache.match]
+path = ["~/.bun/install/cache"]
+
+[rules.node_gyp_cache]
+category = "node"
+description = "node-gyp downloaded Node headers"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.node_gyp_cache.match]
+path = [
+    "~/Library/Caches/node-gyp",
+    "~/.cache/node-gyp",
+    "%LOCALAPPDATA%/node-gyp/Cache",
+]
+
+[rules.deno_cache]
+category = "node"
+description = "Deno module and compilation cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.deno_cache.match]
+path = ["~/Library/Caches/deno", "~/.cache/deno", "%LOCALAPPDATA%/deno"]

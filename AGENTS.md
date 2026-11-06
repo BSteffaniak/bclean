@@ -8,6 +8,7 @@ See `docs/PLAN.md` for the architecture.
 - **Rust build**: `cargo build`
 - **Rust test**: `cargo nextest run --no-fail-fast` (or `cargo test`), `cargo test -p <package>` (single package)
 - **Rust lint**: `cargo clippy --all-targets -- -D warnings` (zero warnings is REQUIRED)
+- **Cross-platform lint**: `nix develop --command scripts/cross-check.sh` (macOS, Linux, Windows)
 - **Unused deps**: `cargo machete --with-metadata` (zero findings is REQUIRED)
 - **Format**: `cargo fmt` (Rust) for ALL packages in the workspace; `taplo fmt` for TOML
 - **Install globally**: `cargo install --path packages/bclean`
@@ -33,8 +34,10 @@ See `docs/PLAN.md` for the architecture.
 - Fix clippy root causes. No crate-level `allow`s beyond the header; item-level `#[allow]` only
   with a comment explaining why.
 - No wildcard imports outside `#[cfg(test)] mod tests { use super::*; }`.
-- **Unsafe**: Only in platform backends (`scan`, `watch`, `staleness`, `daemon` platform modules).
-  Every `unsafe` block needs a `// SAFETY:` comment.
+- **Unsafe**: Only for platform FFI (syscalls, OS APIs) in platform-specific modules; never in
+  `bclean_model`, `bclean_tree`, or pure logic. Every `unsafe` block needs a `// SAFETY:` comment.
+- **Databases**: All database access goes through `switchy_database` /
+  `switchy_database_connection` (SQLite via `sqlite-rusqlite`), never raw `rusqlite`.
 - **Rustdoc Error docs**: Use asterisks (*) for bullet points, document all error conditions
 - **Must use**: Add `#[must_use]` to constructors and getters that return types OTHER THAN Result or Option
 

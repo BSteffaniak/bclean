@@ -1,0 +1,58 @@
+# Haskell (cabal / stack) build output and caches.
+
+[rules.cabal_dist_newstyle]
+category = "haskell"
+description = "cabal build output (dist-newstyle/ next to *.cabal or cabal.project)"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.cabal_dist_newstyle.match]
+name = ["dist-newstyle", "dist"]
+sibling_any = ["*.cabal", "cabal.project"]
+not_under = ["**/node_modules/**"]
+
+[rules.stack_work]
+category = "haskell"
+description = "stack per-project build output (.stack-work/ next to stack.yaml or package.yaml)"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.stack_work.match]
+name = [".stack-work"]
+sibling_any = ["stack.yaml", "package.yaml", "*.cabal"]
+
+[rules.cabal_packages]
+category = "haskell"
+description = "cabal downloaded package archives and index"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "DELETE" }
+[rules.cabal_packages.match]
+path = [
+    "~/.cabal/packages",
+    "~/.cache/cabal/packages",
+    "%APPDATA%/cabal/packages",
+]
+
+[rules.stack_root]
+category = "haskell"
+description = "stack root (~/.stack): GHC installs, snapshots, and package index; very slow to rebuild"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "TOOL_CACHE", regen_cost = "EXPENSIVE" }
+action = { kind = "TRASH" }
+[rules.stack_root.match]
+path = ["~/.stack", "%APPDATA%/stack"]
+
+[rules.ghcup_cache]
+category = "haskell"
+description = "ghcup download cache"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "ghcup gc --cache", fallback = "DELETE" }
+[rules.ghcup_cache.match]
+path = ["~/.ghcup/cache"]

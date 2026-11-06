@@ -1,0 +1,33 @@
+# Dart / Flutter tool output and package caches.
+
+[rules.dart_tool]
+category = "dart"
+description = "Dart/Flutter per-project tool state (.dart_tool/ next to pubspec.yaml); restored by `dart pub get`"
+confidence = "HIGH"
+ephemeral = { kind = "DEPENDENCIES", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "DELETE" }
+[rules.dart_tool.match]
+name = [".dart_tool"]
+sibling_any = ["pubspec.yaml"]
+
+[rules.flutter_build]
+category = "dart"
+description = "Flutter build output (build/ next to pubspec.yaml); `flutter clean` removes it"
+confidence = "HIGH"
+ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
+stale = { project_idle = "30d" }
+action = { kind = "COMMAND", run = "flutter clean", fallback = "DELETE" }
+[rules.flutter_build.match]
+name = ["build"]
+sibling_all = ["pubspec.yaml", ".metadata"]
+
+[rules.pub_cache]
+category = "dart"
+description = "Dart pub package cache; `dart pub cache clean` empties it"
+confidence = "HIGH"
+priority = 10
+ephemeral = { kind = "PACKAGE_CACHE", regen_cost = "NETWORK" }
+action = { kind = "COMMAND", run = "dart pub cache clean --force", fallback = "DELETE" }
+[rules.pub_cache.match]
+path = ["~/.pub-cache", "%LOCALAPPDATA%/Pub/Cache"]
