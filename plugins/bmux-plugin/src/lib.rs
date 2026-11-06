@@ -8,7 +8,9 @@
 //! This is a bmux *native* plugin (a `cdylib` loaded by the bmux server). On activation it
 //! starts a background [`monitor::Monitor`] thread that keeps a live view of the bclean daemon
 //! (status, volumes, alerts, plus a `Subscribe { Volumes, Alerts }` event stream), reconnecting
-//! with backoff while the daemon is down. Commands read that view:
+//! with backoff while the daemon is down. The monitor mirrors that view to bmux's tab bar (a
+//! status item plus toasts for new alerts) when bmux attributes those calls to this plugin; see
+//! [`tab_bar`]. Commands read the same view:
 //!
 //! * `status`: detailed report (CLI) or a one-line status message (keybinding)
 //! * `segment`: the compact status segment (e.g. `◕ 87% /  ⚠ 2`), for prompts and bars
@@ -19,6 +21,7 @@ pub mod daemon;
 pub mod monitor;
 pub mod settings;
 pub mod status;
+pub mod tab_bar;
 
 use bclean_model::AlertEvent;
 use bclean_protocol::Endpoint;
@@ -36,12 +39,15 @@ use bmux_tabs_plugin_api::tabs_commands::{
 use crate::monitor::Monitor;
 use crate::settings::{OpenLayout, Settings};
 use crate::status::{Connection, Snapshot, Style};
+use crate::tab_bar::{Publisher, ServiceTabBar};
 
 /// The plugin manifest (also used by `export_plugin!`).
 pub const PLUGIN_MANIFEST: &str = include_str!("../plugin.toml");
 
 /// Capability required to call `bmux.tabs` mutating commands.
 const TABS_WRITE: &str = "bmux.tabs.write";
+/// Plugin id of the `bmux.tabs` service provider.
+const BMUX_TABS: &str = "bmux.tabs";
 
 /// The plugin instance. bmux keeps one per provider process.
 #[derive(Default)]
@@ -165,7 +171,17 @@ impl BcleanPlugin {
             }
         };
         let options = daemon::client_options(endpoint, &settings, settings.autostart);
-        match Monitor::start(settings, options) {
+        let started = if settings.tab_bar {
+            // The monitor thread calls the tab bar through this activation's context.
+            let publisher = Publisher::new(
+                Box::new(ServiceTabBar::new(context.clone())),
+                settings.clone(),
+            );
+            Monitor::start_with_tab_bar(publisher, settings, options)
+        } else {
+            Monitor::start(settings, options)
+        };
+        match started {
             Ok(monitor) => self.monitor = Some(monitor),
             Err(error) => eprintln!("bclean: failed to start monitor: {error}"),
         }
@@ -198,8 +214,11 @@ impl RustPlugin for BcleanPlugin {
     }
 
     fn deactivate(&mut self, _context: NativeLifecycleContext) -> Result<i32, PluginCommandError> {
-        // Dropping the monitor stops and joins its thread.
-        self.monitor = None;
+        if let Some(mut monitor) = self.monitor.take() {
+            monitor.stop();
+            // The tab bar keeps items until their owner clears them.
+            monitor.shared().clear_tab_bar();
+        }
         Ok(EXIT_OK)
     }
 }
@@ -236,6 +255,11 @@ fn report(context: &NativeCommandContext, cli_text: &str, summary: &str) {
 /// Opens a pane running the bclean TUI through the `bmux.tabs` typed service.
 fn run_open(context: &NativeCommandContext) -> Result<i32, PluginCommandError> {
     let (settings, _endpoint) = invocation_config(context)?;
+    // A dynamically loaded plugin links its own copy of `bmux_plugin`, whose service-location
+    // map the host never fills, so typed calls would try to load the bundled `bmux.tabs`
+    // provider from disk and fail. Route it through the host like bmux does for CLI processes;
+    // this never overrides a provider that is local to this process (static bundling).
+    bmux_plugin::global_service_locations().mark_remote(BMUX_TABS);
     let interface_id = tabs_commands::INTERFACE_ID;
     let interface = interface_id.as_str();
     let program = settings.open_program.clone();

@@ -8,6 +8,9 @@ bclean disk-pressure status and alerts inside bmux:
   monitored volume, colored by threshold with `--ansi`
 - **`bclean ack-alerts`**: acknowledge every active alert
 - **`bclean open`**: open a pane running the `bclean` TUI (through the `bmux.tabs` service)
+- **Tab bar**: the same segment as a `bmux.tab_bar` status item, plus a toast for each new alert,
+  published by the background monitor. bmux does not yet route these calls correctly for
+  dynamically loaded plugins, so this currently disables itself; see *Limitations*.
 
 The plugin never starts the bclean daemon unless you set `autostart = true`. While the daemon is
 down the segment shows a dim `◌ bclean` (or nothing, with `offline_indicator = false`), and the
@@ -78,7 +81,7 @@ The plugin does not claim any keys. Bind its commands yourself:
 ```
 
 From a keybinding, `status`, `ack-alerts`, and `open` report through a one-line command status
-message instead of writing to the terminal (see *Limitations*).
+message instead of writing to the terminal.
 
 ## Shell prompt / external status bars
 
@@ -105,7 +108,8 @@ critical_percent = 90          # bold red at or above this usage
 volumes = []                   # mount points to consider; empty = all volumes the daemon reports
 show_when_ok = true            # show the volume even below the warning threshold
 offline_indicator = true       # dim "◌ bclean" while the daemon is unreachable
-notify = true                  # queue new alerts for the next `status`
+tab_bar = true                 # mirror the segment to bmux's tab bar (status item id "disk")
+notify = true                  # toast new alerts in the tab bar and queue them for the next `status`
 open_program = "bclean"        # what `open` runs
 open_args = []
 open_layout = "SPLIT_VERTICAL" # SPLIT_VERTICAL | SPLIT_HORIZONTAL | FLOATING (lowercase also accepted)
@@ -134,20 +138,51 @@ with a message in the bmux server log; they never abort bmux startup.
 - **`open`** calls the `bmux.tabs` typed service (`tabs-commands/launch-pane`, or
   `create-floating-pane`) through the generated `bmux_tabs_plugin_api` request types. The plugin
   declares `bmux.tabs.write` as an optional capability and `bmux.tabs` as an optional dependency.
+  A `cdylib` links its own copy of `bmux_plugin`, whose service-location map the host never fills,
+  so `open` marks `bmux.tabs` as host-routed first (as bmux does for CLI processes). This never
+  overrides a provider that is local to the process, such as in a statically bundled build.
+- **Tab bar:** with `monitor` and `tab_bar` on, the monitor keeps one `bmux.tab_bar` status item
+  (`id = "disk"`) in sync with the segment. It sends only changes of text or severity. Severity is
+  `critical`/`warning` by the volume thresholds or the worst active alert, `info` for info-only
+  alerts, and `normal` otherwise. The item is cleared when the segment is empty, or while the
+  daemon is offline with `offline_indicator = false` (otherwise it shows `◌ bclean`). With
+  `notify`, each newly raised or escalated alert becomes a toast (title, body, and severity from
+  the alert), at most once per alert key and severity. `deactivate` stops the monitor and then
+  calls `clear-status-items`. The calls run on the monitor thread through the activation's
+  lifecycle context. The tab-bar capabilities (`bmux.tab_bar.status.write`,
+  `bmux.tab_bar.status.read`, `bmux.tab_bar.notify`) and the `bmux.tab_bar` dependency are
+  optional, so the plugin still loads when the tab bar is disabled.
+- **Attribution check:** the tab bar namespaces items by the caller plugin id that bmux attaches to
+  each request. After its first successful `set-status-item`, the plugin calls
+  `list-status-items` and continues only if the item is owned by `bclean`. If bmux attributed it to
+  another id, the plugin removes the item and disables tab-bar publishing for this activation. A
+  transport failure also disables it. Either way it logs one `bclean: tab-bar status and toasts
+  disabled: ...` line to the bmux server's stderr. The commands keep working.
 
 ## Limitations (current bmux plugin API)
 
-- **No status-bar segment inside bmux.** The tab/status bar (`bmux.tab_bar`) has no extension point
-  for third-party modules. Retained layout/surface publication (`bmux_plugin::layout` /
-  `surface`) works only through in-process attach companions, and only bundled plugins compiled
-  into bmux can register those. A `cdylib` has its own copy of those global registries. Use
-  `bclean segment` in a prompt or an external bar instead.
-- **No toasts.** bmux has no notification API for plugins, and attach prompts are in-process only.
-  New alerts are queued and shown by the next `bclean status`. The bclean daemon's own alert
-  transports (desktop notifications, webhooks) remain the push channel.
-- **Keybinding feedback from a dynamic plugin is lost.** `status` records the
-  `bmux.status_message` command outcome. bmux reads that through the SDK's thread-local capture,
-  which a separately compiled `cdylib` does not share, so the message only shows when the plugin is
-  statically bundled. CLI invocations print normally.
+- **Tab-bar status and toasts are inactive for the dynamically loaded plugin (bmux master
+  `4cd26692`).** The publishing code is in place, but bmux has no correctly attributed route from a
+  `cdylib` to the bundled tab-bar plugin:
+  - A `cdylib`'s typed calls go through its own copy of `bmux_plugin`. That copy has an empty
+    service-location map and no bundled providers, so every call (from a command, `activate`, or
+    the monitor thread) fails with `plugin 'bmux.tab_bar' is missing native entry path`. bmux's
+    own `examples/native-plugin` (`status-set`, `notify`) fails the same way.
+  - Forcing the host route (marking `bmux.tab_bar` remote, as `open` does for `bmux.tabs`) makes
+    calls succeed, including from the monitor thread, through the process-wide host connection
+    fallback. But bmux relays them over IPC `InvokeService`, which stamps
+    `caller_plugin_id = "bmux.core"`, so the item would land in the `bmux.core` namespace. The
+    plugin does not use that route.
+  - The plugin enables itself automatically once bmux attributes the calls to `bclean`. That
+    happens on a bmux with an upstream fix. It should also happen when bclean is statically bundled
+    into a bmux build, where the call is dispatched in-process with the right caller (not verified
+    here).
+  - Until then, use `bclean segment` in a prompt or an external bar. New alerts are still queued
+    for the next `bclean status`, and the bclean daemon's own alert transports (desktop
+    notifications, webhooks) remain the push channel.
+- Keybinding status messages from the dynamic plugin need bmux `25b200ef` or newer. That version
+  reads the plugin's `bmux_plugin_take_command_outcome_v1` export, which `export_plugin!` provides.
+- `open` from a shell with no attached client fails with `current client has no selected session`.
+  Use it from a keybinding inside an attached session.
 - `bmux plugin run bclean <cmd>` prints nothing for successful commands, because bmux does not mark
   that path as a CLI invocation. Use `bmux bclean <cmd>`.

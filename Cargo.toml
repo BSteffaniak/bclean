@@ -38,6 +38,7 @@ bmux_config_composition = { git = "https://github.com/BSteffaniak/bmux", branch 
 bmux_keyboard = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_plugin = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_plugin_sdk = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_tab_bar_plugin_api = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_tabs_plugin_api = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_tui = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
 bmux_tui_components = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }

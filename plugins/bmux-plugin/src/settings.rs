@@ -45,7 +45,7 @@ pub struct Settings {
     /// Executable used to autostart the daemon (`<daemon_exe> daemon run`) and resolved from
     /// `PATH` when relative.
     pub daemon_exe: String,
-    /// Run the background monitor inside the bmux server process.
+    /// Run the background monitor inside the bmux server process (it also feeds the tab bar).
     pub monitor: bool,
     /// Usage percentage at which a volume is shown as a warning.
     pub warning_percent: f64,
@@ -57,7 +57,9 @@ pub struct Settings {
     pub show_when_ok: bool,
     /// Show a dim indicator when the daemon is unreachable (otherwise render nothing).
     pub offline_indicator: bool,
-    /// Queue new alerts for display by the next `status` invocation.
+    /// Mirror the segment to bmux's tab bar as a status item (when bmux allows it).
+    pub tab_bar: bool,
+    /// Raise a tab-bar toast for each new alert and queue it for the next `status` invocation.
     pub notify: bool,
     /// Program launched by `open`.
     pub open_program: String,
@@ -88,6 +90,7 @@ impl Default for Settings {
             volumes: Vec::new(),
             show_when_ok: true,
             offline_indicator: true,
+            tab_bar: true,
             notify: true,
             open_program: "bclean".to_owned(),
             open_args: Vec::new(),
@@ -213,6 +216,7 @@ mod tests {
         assert_eq!(settings, Settings::default());
         assert!(!settings.autostart);
         assert!(settings.monitor);
+        assert!(settings.tab_bar);
     }
 
     #[test]
@@ -226,6 +230,7 @@ mod tests {
             volumes = ["/", "/data"]
             open_layout = "floating"
             open_args = ["--no-daemon"]
+            tab_bar = false
             "#,
         )
         .unwrap();
@@ -235,6 +240,7 @@ mod tests {
         assert!((settings.thresholds().critical - 0.955).abs() < 1e-9);
         assert_eq!(settings.volumes, ["/", "/data"]);
         assert_eq!(settings.open_layout, OpenLayout::Floating);
+        assert!(!settings.tab_bar);
         assert_eq!(
             parse("open_layout = \"SPLIT_HORIZONTAL\"")
                 .unwrap()

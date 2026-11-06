@@ -22,6 +22,7 @@ bclean_model = { workspace = true }
 bclean_protocol = { workspace = true }
 bmux_plugin = { workspace = true }
 bmux_plugin_sdk = { workspace = true }
+bmux_tab_bar_plugin_api = { workspace = true }
 bmux_tabs_plugin_api = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true }
@@ -39,6 +40,7 @@ fail-on-warnings = [
     "bclean_protocol/fail-on-warnings",
     "bmux_plugin/fail-on-warnings",
     "bmux_plugin_sdk/fail-on-warnings",
+    "bmux_tab_bar_plugin_api/fail-on-warnings",
     "bmux_tabs_plugin_api/fail-on-warnings",
 ]
 # Set by a host that compiles this plugin into its binary; suppresses the dynamic exports.

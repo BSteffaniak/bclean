@@ -6,7 +6,13 @@ description = "bclean disk-pressure status, alerts, and TUI launcher"
 homepage = "https://github.com/BSteffaniak/bclean"
 id = "bclean"
 name = "bclean"
-optional_capabilities = ["bmux.tabs.write"]
+# Optional so the plugin still loads when the tab bar is disabled.
+optional_capabilities = [
+    "bmux.tab_bar.notify",
+    "bmux.tab_bar.status.read",
+    "bmux.tab_bar.status.write",
+    "bmux.tabs.write",
+]
 owns_namespaces = ["bclean"]
 runtime = "native"
 version = "0.1.0"
@@ -43,5 +49,10 @@ summary = "Open a pane running the bclean TUI"
 
 [[dependencies]]
 plugin_id = "bmux.tabs"
+required = false
+version_req = ">=0.0.1-alpha.0"
+
+[[dependencies]]
+plugin_id = "bmux.tab_bar"
 required = false
 version_req = ">=0.0.1-alpha.0"

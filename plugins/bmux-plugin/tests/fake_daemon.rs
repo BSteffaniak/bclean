@@ -7,11 +7,13 @@ use bclean_bmux_plugin::daemon;
 use bclean_bmux_plugin::monitor::Monitor;
 use bclean_bmux_plugin::settings::Settings;
 use bclean_bmux_plugin::status::{self, Connection, Style};
+use bclean_bmux_plugin::tab_bar::{OWNER, Publisher, TabBar, TabBarError};
 use bclean_model::{AlertEvent, Severity, VolumeStats};
 use bclean_protocol::{
     ClientFrame, DaemonStatus, Endpoint, Event, PROTOCOL_VERSION, Request, Response, ServerFrame,
     ServerHello,
 };
+use bmux_tab_bar_plugin_api::status_items_list::Severity as BarSeverity;
 
 fn endpoint(tag: &str) -> Endpoint {
     if cfg!(windows) {
@@ -191,4 +193,84 @@ fn monitor_tracks_daemon_and_ack_clears_alerts() {
     assert!(shared.snapshot().alerts.is_empty());
 
     monitor.stop();
+}
+
+/// Tab-bar stand-in recording what the monitor publishes.
+#[derive(Clone, Default)]
+struct Bar {
+    item: Arc<Mutex<Option<(String, BarSeverity)>>>,
+    toasts: Arc<Mutex<Vec<(String, BarSeverity)>>>,
+}
+
+impl TabBar for Bar {
+    fn set_status_item(
+        &mut self,
+        _id: &str,
+        text: &str,
+        severity: BarSeverity,
+    ) -> Result<(), TabBarError> {
+        *self.item.lock().unwrap() = Some((text.to_owned(), severity));
+        Ok(())
+    }
+
+    fn clear_status_item(&mut self, _id: &str) -> Result<(), TabBarError> {
+        *self.item.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn clear_status_items(&mut self) -> Result<(), TabBarError> {
+        self.clear_status_item("")
+    }
+
+    fn status_item_owners(&mut self, _id: &str) -> Result<Vec<String>, TabBarError> {
+        Ok(vec![OWNER.to_owned()])
+    }
+
+    fn notify(
+        &mut self,
+        title: &str,
+        _body: Option<&str>,
+        severity: BarSeverity,
+    ) -> Result<(), TabBarError> {
+        self.toasts
+            .lock()
+            .unwrap()
+            .push((title.to_owned(), severity));
+        Ok(())
+    }
+}
+
+#[test]
+fn monitor_publishes_status_item_and_toasts() {
+    let endpoint = endpoint("bar");
+    let state = Arc::new(Mutex::new(State {
+        alerts: vec![alert("old")],
+        acked: Vec::new(),
+    }));
+    spawn_daemon(endpoint.clone(), Arc::clone(&state));
+
+    let settings = Settings::default();
+    let options = daemon::client_options(endpoint, &settings, false);
+    let bar = Bar::default();
+    let publisher = Publisher::new(Box::new(bar.clone()), settings.clone());
+    let mut monitor = Monitor::start_with_tab_bar(publisher, settings, options).unwrap();
+
+    let item = || bar.item.lock().unwrap().clone();
+    wait_until("published segment", || {
+        item().is_some_and(|(text, _)| text == "● 92% /  ⚠ 2")
+    });
+    assert_eq!(item().unwrap().1, BarSeverity::Critical);
+    // Only the alert pushed after subscribing is new; "old" was already active.
+    wait_until("toast", || !bar.toasts.lock().unwrap().is_empty());
+    assert_eq!(
+        *bar.toasts.lock().unwrap(),
+        [("fresh almost full".to_owned(), BarSeverity::Critical)]
+    );
+
+    monitor.shared().clear_alerts();
+    assert_eq!(item().unwrap().0, "● 92% /");
+
+    monitor.stop();
+    monitor.shared().clear_tab_bar();
+    assert_eq!(item(), None);
 }

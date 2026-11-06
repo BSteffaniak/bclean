@@ -1,9 +1,11 @@
 //! Background monitor: a dedicated thread with its own Tokio runtime that keeps a live
 //! [`Snapshot`] of the daemon, reconnecting with exponential backoff.
 //!
-//! bmux native plugins are synchronous FFI entry points and the host's kernel bridge is only
-//! valid during an invocation, so the monitor never calls back into bmux. It only maintains
-//! shared state that command handlers (running in the same provider process) read.
+//! Command handlers (running in the same provider process) read the shared state. When given a
+//! [`Publisher`], the monitor also pushes the status segment and new-alert toasts to bmux's tab
+//! bar as the state changes. Those calls run on this thread, outside any host invocation, through
+//! the service caller captured at activation; [`crate::tab_bar`] explains how the publisher
+//! verifies that bmux attributes them to `bclean` and disables itself otherwise.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -17,18 +19,38 @@ use tokio::sync::{mpsc, watch};
 use crate::daemon;
 use crate::settings::Settings;
 use crate::status::{Connection, Snapshot};
+use crate::tab_bar::Publisher;
 
 /// Maximum number of queued, not-yet-shown alert notifications.
 const MAX_PENDING: usize = 32;
 
 /// State shared between the monitor thread and command handlers.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Shared {
     snapshot: Mutex<Snapshot>,
     pending: Mutex<Vec<AlertEvent>>,
+    tab_bar: Mutex<Option<Publisher>>,
+}
+
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared")
+            .field("snapshot", &self.snapshot)
+            .field("pending", &self.pending)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Shared {
+    /// Shared state that mirrors every change to the tab bar through `publisher`.
+    #[must_use]
+    pub fn with_tab_bar(publisher: Publisher) -> Self {
+        Self {
+            tab_bar: Mutex::new(Some(publisher)),
+            ..Self::default()
+        }
+    }
+
     /// A copy of the current snapshot.
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot
@@ -42,9 +64,26 @@ impl Shared {
         std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
+    /// Applies `f` to the snapshot and publishes the result to the tab bar (if any).
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
-        let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        f(&mut snapshot);
+        let snapshot = {
+            let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+            f(&mut snapshot);
+            snapshot.clone()
+        };
+        self.with_publisher(|publisher| publisher.publish(&snapshot));
+    }
+
+    fn with_publisher(&self, f: impl FnOnce(&mut Publisher)) {
+        let mut tab_bar = self.tab_bar.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(publisher) = tab_bar.as_mut() {
+            f(publisher);
+        }
+    }
+
+    /// Removes everything published to the tab bar (on deactivate).
+    pub fn clear_tab_bar(&self) {
+        self.with_publisher(Publisher::clear);
     }
 
     /// Replaces the snapshot with a freshly fetched one.
@@ -91,6 +130,9 @@ impl Shared {
             fresh = s.raise_alert(alert.clone());
             s.updated_at = Some(daemon::now());
         });
+        if fresh {
+            self.with_publisher(|publisher| publisher.alert_raised(&alert));
+        }
         if !(fresh && notify) {
             return false;
         }
@@ -151,7 +193,28 @@ impl Monitor {
     ///
     /// * If the thread cannot be spawned
     pub fn start(settings: Settings, options: ClientOptions) -> std::io::Result<Self> {
-        let shared = Arc::new(Shared::default());
+        Self::start_with(Shared::default(), settings, options)
+    }
+
+    /// Starts the monitor thread, mirroring state changes to the tab bar through `publisher`.
+    ///
+    /// # Errors
+    ///
+    /// * If the thread cannot be spawned
+    pub fn start_with_tab_bar(
+        publisher: Publisher,
+        settings: Settings,
+        options: ClientOptions,
+    ) -> std::io::Result<Self> {
+        Self::start_with(Shared::with_tab_bar(publisher), settings, options)
+    }
+
+    fn start_with(
+        shared: Shared,
+        settings: Settings,
+        options: ClientOptions,
+    ) -> std::io::Result<Self> {
+        let shared = Arc::new(shared);
         let (stop, stop_rx) = watch::channel(false);
         let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
