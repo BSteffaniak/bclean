@@ -9,8 +9,6 @@ Fast, action-oriented disk usage analyzer, cleaner, and monitor.
 - **Monitor** disk usage with a background daemon that raises alarms and can auto-clean,
   driven by composable TOML policies.
 
-See [`docs/PLAN.md`](docs/PLAN.md) for the architecture.
-
 ## Install
 
 ```sh
