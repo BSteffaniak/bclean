@@ -1,0 +1,18 @@
+[package]
+name = "bclean_tree"
+description = "Compact arena-backed filesystem tree with aggregated sizes"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[features]
+default = []
+fail-on-warnings = []

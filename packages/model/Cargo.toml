@@ -1,0 +1,22 @@
+[package]
+name = "bclean_model"
+description = "Shared bclean domain and configuration model types"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive", "std"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true, features = ["parse", "serde"] }
+
+[features]
+default = []
+fail-on-warnings = []

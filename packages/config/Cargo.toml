@@ -1,0 +1,18 @@
+[package]
+name = "bclean_config"
+description = "Layered bclean configuration loading via bmux config composition"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bmux_config_composition = { workspace = true }
+
+[features]
+default = []
+fail-on-warnings = []

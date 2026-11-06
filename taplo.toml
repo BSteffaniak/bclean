@@ -1,0 +1,4 @@
+include = ["*.toml", "packages/*/Cargo.toml", "plugins/*/Cargo.toml"]
+
+[formatting]
+indent_string = "    "

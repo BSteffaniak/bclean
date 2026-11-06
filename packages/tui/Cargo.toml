@@ -1,0 +1,21 @@
+[package]
+name = "bclean_tui"
+description = "Interactive bclean terminal UI built on bmux TUI"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bmux_keyboard = { workspace = true }
+bmux_tui = { workspace = true, features = ["crossterm"] }
+bmux_tui_components = { workspace = true }
+bmux_tui_runtime = { workspace = true, features = ["crossterm"] }
+
+[features]
+default = []
+fail-on-warnings = []

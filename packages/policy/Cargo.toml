@@ -1,0 +1,17 @@
+[package]
+name = "bclean_policy"
+description = "Disk-pressure triggers and auto-clean planning for bclean"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+[features]
+default = []
+fail-on-warnings = []

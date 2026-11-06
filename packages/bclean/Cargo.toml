@@ -1,0 +1,22 @@
+[package]
+name = "bclean"
+description = "Fast, action-oriented disk usage analyzer, cleaner, and monitor"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "bclean"
+path = "src/main.rs"
+
+[dependencies]
+bclean_cli = { workspace = true }
+
+[features]
+default = []
+fail-on-warnings = ["bclean_cli/fail-on-warnings"]

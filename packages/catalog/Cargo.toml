@@ -1,0 +1,17 @@
+[package]
+name = "bclean_catalog"
+description = "Built-in bclean rule catalog of known ephemeral and cache directories"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+
+[features]
+default = []
+fail-on-warnings = []

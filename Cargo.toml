@@ -1,0 +1,110 @@
+[workspace]
+members = ["packages/*"]
+resolver = "3"
+
+[workspace.package]
+authors = ["Braden Steffaniak"]
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/BSteffaniak/bclean"
+version = "0.1.0"
+readme = "README.md"
+keywords = ["disk", "cleanup", "ncdu", "monitoring", "filesystem"]
+categories = ["command-line-utilities", "filesystem"]
+
+[workspace.dependencies]
+# Internal packages
+bclean_actions = { version = "0.1.0", path = "packages/actions", default-features = false }
+bclean_alerts = { version = "0.1.0", path = "packages/alerts", default-features = false }
+bclean_catalog = { version = "0.1.0", path = "packages/catalog", default-features = false }
+bclean_cli = { version = "0.1.0", path = "packages/cli", default-features = false }
+bclean_client = { version = "0.1.0", path = "packages/client", default-features = false }
+bclean_config = { version = "0.1.0", path = "packages/config", default-features = false }
+bclean_daemon = { version = "0.1.0", path = "packages/daemon", default-features = false }
+bclean_index = { version = "0.1.0", path = "packages/index", default-features = false }
+bclean_model = { version = "0.1.0", path = "packages/model", default-features = false }
+bclean_policy = { version = "0.1.0", path = "packages/policy", default-features = false }
+bclean_protocol = { version = "0.1.0", path = "packages/protocol", default-features = false }
+bclean_rules = { version = "0.1.0", path = "packages/rules", default-features = false }
+bclean_scan = { version = "0.1.0", path = "packages/scan", default-features = false }
+bclean_staleness = { version = "0.1.0", path = "packages/staleness", default-features = false }
+bclean_tree = { version = "0.1.0", path = "packages/tree", default-features = false }
+bclean_tui = { version = "0.1.0", path = "packages/tui", default-features = false }
+bclean_watch = { version = "0.1.0", path = "packages/watch", default-features = false }
+
+# bmux ecosystem
+bmux_config_composition = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_keyboard = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_tui = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_tui_components = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+bmux_tui_runtime = { git = "https://github.com/BSteffaniak/bmux", branch = "master", default-features = false }
+
+# CLI
+clap = { version = "4.6.7", default-features = false, features = [
+    "derive",
+    "std",
+    "help",
+    "usage",
+    "error-context",
+] }
+
+# Serialization
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+toml = { version = "1.2.1", default-features = false, features = ["parse", "serde"] }
+
+# Error handling
+anyhow = { version = "1.0.100", default-features = false }
+thiserror = { version = "2.0.21", default-features = false }
+
+# Async / concurrency
+crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
+crossbeam-deque = { version = "0.8.8", default-features = false, features = ["std"] }
+parking_lot = { version = "0.13.0", default-features = false }
+rayon = { version = "1.12.0", default-features = false }
+tokio = { version = "1.54.1", default-features = false }
+
+# Filesystem / platform
+dirs = { version = "7.0.0", default-features = false }
+filetime = { version = "0.2.29", default-features = false }
+globset = { version = "0.4.21", default-features = false }
+jwalk = { version = "0.9.0", default-features = false }
+libc = { version = "0.2.191", default-features = false }
+notify = { version = "8.2.1", default-features = false }
+rustix = { version = "1.1.6", default-features = false }
+trash = { version = "5.3.0", default-features = false }
+windows-sys = { version = "0.61.2", default-features = false }
+
+# Git
+gix = { version = "0.90.0", default-features = false }
+
+# Persistence
+rusqlite = { version = "0.41.1", default-features = false }
+
+# Alerts
+notify-rust = { version = "4.18.2", default-features = false }
+ureq = { version = "3.5.1", default-features = false }
+
+# Misc
+bytesize = { version = "2.7.0", default-features = false }
+chrono = { version = "0.4.45", default-features = false }
+cron = { version = "0.17.0", default-features = false }
+memchr = { version = "2.8.3", default-features = false }
+
+# Logging
+log = { version = "0.4.35", default-features = false }
+pretty_env_logger = { version = "0.5.0", default-features = false }
+
+# Testing
+criterion = { version = "0.8.2", default-features = false }
+tempfile = { version = "3.27.0", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+strip = "symbols"
+
+[profile.bench]
+debug = true
+strip = "none"
