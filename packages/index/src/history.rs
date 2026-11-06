@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use bclean_model::VolumeStats;
 use bclean_tree::{EntryKind, NodeId, Tree};
-use switchy_database::query::{FilterableQuery as _, SortDirection, where_in};
+use switchy_database::query::{FilterableQuery as _, SortDirection, identifier, where_in};
 use switchy_database::schema::{Column, DataType, create_index, create_table};
 use switchy_database::{Database, DatabaseValue, Row, SqliteJournalMode};
 use switchy_database_connection::{SqliteAccess, SqliteOpenOptions, open_sqlite_rusqlite};
@@ -1007,26 +1007,35 @@ async fn path_get_or_insert(
     int(&row, "id")
 }
 
-/// Inserts one rollup's size rows.
-///
-/// Rows are inserted one statement at a time: `upsert_multi` in the pinned `switchy_database`
-/// binds every parameter of a multi-row chunk to the same placeholder index, which collapses the
-/// batch to a single row.
+/// Inserts one rollup's size rows as a single multi-row upsert keyed by `(rollup_id, path_id)`.
 async fn insert_sizes(
     db: &dyn Database,
     rollup_id: i64,
     rows: &[[i64; 4]],
 ) -> Result<(), HistoryError> {
-    for [path_id, allocated, apparent, items] in rows {
-        db.insert("rollup_sizes")
-            .value("rollup_id", rollup_id)
-            .value("path_id", *path_id)
-            .value("allocated", *allocated)
-            .value("apparent", *apparent)
-            .value("items", *items)
-            .execute(db)
-            .await?;
+    if rows.is_empty() {
+        return Ok(());
     }
+    let values = rows
+        .iter()
+        .map(|[path_id, allocated, apparent, items]| {
+            vec![
+                ("rollup_id", DatabaseValue::Int64(rollup_id)),
+                ("path_id", DatabaseValue::Int64(*path_id)),
+                ("allocated", DatabaseValue::Int64(*allocated)),
+                ("apparent", DatabaseValue::Int64(*apparent)),
+                ("items", DatabaseValue::Int64(*items)),
+            ]
+        })
+        .collect();
+    db.upsert_multi("rollup_sizes")
+        .unique(vec![
+            Box::new(identifier("rollup_id")),
+            Box::new(identifier("path_id")),
+        ])
+        .values(values)
+        .execute(db)
+        .await?;
     Ok(())
 }
 

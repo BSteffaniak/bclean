@@ -576,7 +576,7 @@ dependencies = [
 [[package]]
 name = "bmux_attach_image_protocol"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_codec",
  "serde",
@@ -586,7 +586,7 @@ dependencies = [
 [[package]]
 name = "bmux_codec"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "serde",
 ]
@@ -594,7 +594,7 @@ dependencies = [
 [[package]]
 name = "bmux_config_composition"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "libc",
  "serde",
@@ -604,7 +604,7 @@ dependencies = [
 [[package]]
 name = "bmux_ipc"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_attach_image_protocol",
  "bmux_codec",
@@ -619,7 +619,7 @@ dependencies = [
 [[package]]
 name = "bmux_keyboard"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "crossterm",
 ]
@@ -627,7 +627,7 @@ dependencies = [
 [[package]]
 name = "bmux_perf_telemetry"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "serde",
  "serde_json",
@@ -636,7 +636,7 @@ dependencies = [
 [[package]]
 name = "bmux_plugin"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_codec",
  "bmux_ipc",
@@ -664,7 +664,7 @@ dependencies = [
 [[package]]
 name = "bmux_plugin_runtime"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "serde",
  "serde_json",
@@ -676,7 +676,7 @@ dependencies = [
 [[package]]
 name = "bmux_plugin_schema"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "serde",
  "sha2",
@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "bmux_plugin_schema_macros"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_plugin_schema",
  "proc-macro2",
@@ -697,7 +697,7 @@ dependencies = [
 [[package]]
 name = "bmux_plugin_sdk"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_codec",
  "bmux_ipc",
@@ -716,7 +716,7 @@ dependencies = [
 [[package]]
 name = "bmux_tabs_plugin_api"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_ipc",
  "bmux_plugin_schema_macros",
@@ -728,7 +728,7 @@ dependencies = [
 [[package]]
 name = "bmux_terminal_protocol"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "serde",
 ]
@@ -736,7 +736,7 @@ dependencies = [
 [[package]]
 name = "bmux_text_edit"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_keyboard",
  "unicode-segmentation",
@@ -747,7 +747,7 @@ dependencies = [
 [[package]]
 name = "bmux_tui"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_keyboard",
  "bmux_terminal_protocol",
@@ -765,7 +765,7 @@ dependencies = [
 [[package]]
 name = "bmux_tui_components"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_keyboard",
  "bmux_tui",
@@ -777,7 +777,7 @@ dependencies = [
 [[package]]
 name = "bmux_tui_runtime"
 version = "0.0.1-alpha.4"
-source = "git+https://github.com/BSteffaniak/bmux?branch=master#729418ee952185dc542fd921fee7a75d9719b5d0"
+source = "git+https://github.com/BSteffaniak/bmux?branch=master#4cd26692955c068ac8cbac5c5d54ab7385f2f178"
 dependencies = [
  "bmux_keyboard",
  "bmux_terminal_protocol",
@@ -915,7 +915,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1258,7 +1258,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2702,7 +2702,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3061,7 +3061,7 @@ dependencies = [
 [[package]]
 name = "moosicbox_assert"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "colored",
  "moosicbox_env_utils",
@@ -3070,12 +3070,12 @@ dependencies = [
 [[package]]
 name = "moosicbox_env_utils"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 
 [[package]]
 name = "moosicbox_json_utils"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3087,7 +3087,7 @@ dependencies = [
 [[package]]
 name = "moosicbox_log_runtime"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "switchy_fs",
  "thiserror",
@@ -3099,7 +3099,7 @@ dependencies = [
 [[package]]
 name = "moosicbox_profiles"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "moosicbox_assert",
  "switchy_async",
@@ -3961,7 +3961,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4308,7 +4308,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "switchy"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "switchy_async",
  "switchy_async_macros",
@@ -4333,7 +4333,7 @@ dependencies = [
 [[package]]
 name = "switchy_async"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "flume",
  "futures",
@@ -4351,7 +4351,7 @@ dependencies = [
 [[package]]
 name = "switchy_async_macros"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "log",
  "proc-macro-crate",
@@ -4363,7 +4363,7 @@ dependencies = [
 [[package]]
 name = "switchy_database"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4381,7 +4381,7 @@ dependencies = [
 [[package]]
 name = "switchy_database_connection"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "log",
  "rusqlite",
@@ -4394,7 +4394,7 @@ dependencies = [
 [[package]]
 name = "switchy_env"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "log",
  "thiserror",
@@ -4403,7 +4403,7 @@ dependencies = [
 [[package]]
 name = "switchy_fs"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "libc",
  "log",
@@ -4415,7 +4415,7 @@ dependencies = [
 [[package]]
 name = "switchy_http"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4430,7 +4430,7 @@ dependencies = [
 [[package]]
 name = "switchy_http_models"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "moosicbox_assert",
  "strum",
@@ -4440,7 +4440,7 @@ dependencies = [
 [[package]]
 name = "switchy_mdns"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-trait",
  "hostname",
@@ -4453,7 +4453,7 @@ dependencies = [
 [[package]]
 name = "switchy_random"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "log",
  "rand 0.8.8",
@@ -4462,7 +4462,7 @@ dependencies = [
 [[package]]
 name = "switchy_schema"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4480,7 +4480,7 @@ dependencies = [
 [[package]]
 name = "switchy_tcp"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-trait",
  "log",
@@ -4493,7 +4493,7 @@ dependencies = [
 [[package]]
 name = "switchy_telemetry"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "log",
  "moosicbox_assert",
@@ -4510,7 +4510,7 @@ dependencies = [
 [[package]]
 name = "switchy_time"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "chrono",
  "log",
@@ -4520,7 +4520,7 @@ dependencies = [
 [[package]]
 name = "switchy_upnp"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -4542,7 +4542,7 @@ dependencies = [
 [[package]]
 name = "switchy_uuid"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "log",
  "switchy_env",
@@ -4553,7 +4553,7 @@ dependencies = [
 [[package]]
 name = "switchy_web_server"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4574,7 +4574,7 @@ dependencies = [
 [[package]]
 name = "switchy_web_server_core"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "moosicbox_assert",
 ]
@@ -4582,7 +4582,7 @@ dependencies = [
 [[package]]
 name = "switchy_web_server_cors"
 version = "0.5.0"
-source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#8d598be0e609eb28f71817e5ed8ba3e93e650023"
+source = "git+https://github.com/MoosicBox/MoosicBox?branch=master#7a9738ca1097d15d66f175f9457aacf3f3053a0d"
 dependencies = [
  "moosicbox_assert",
  "switchy_http_models",
@@ -4667,7 +4667,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5389,7 +5389,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
