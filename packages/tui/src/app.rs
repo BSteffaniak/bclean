@@ -13,6 +13,8 @@ use bclean_model::{ActionSpec, AlertEvent, Classification, DashboardSummary, Vol
 use bclean_tree::{EntryKind, NodeFlags, NodeId, SizeMode, Tree};
 use bmux_keyboard::{KeyCode, KeyStroke};
 use bmux_tui::event::{Event, MouseEventKind};
+use bmux_tui::geometry::Rect;
+use bmux_tui_components::uniform_list::{UniformList, UniformListOutcome, UniformListState};
 
 use crate::backend::{
     ActionOverride, Backend, BackendEvent, BackendStatus, CleanPlan, CleanReport, EventSink,
@@ -22,7 +24,6 @@ use crate::dashboard::{DashGroup, DashPanel, DashState};
 use crate::listing::{
     ClassStore, Lens, LensFilter, ListingCache, ListingKey, SortBy, SortSpec, top_level_paths,
 };
-use crate::widgets::FixedRowsState;
 
 /// Where to land in a tree requested with [`Backend::open_root`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,8 +227,8 @@ pub struct App<B: Backend> {
     pub(crate) filter: String,
     pub(crate) filter_editing: bool,
     pub(crate) cwd: NodeId,
-    pub(crate) rows: FixedRowsState,
-    lens_rows: BTreeMap<Lens, FixedRowsState>,
+    pub(crate) rows: UniformListState,
+    lens_rows: BTreeMap<Lens, UniformListState>,
     pub(crate) marked: BTreeSet<PathBuf>,
     pub(crate) explain_open: bool,
     pub(crate) modal: Option<Modal>,
@@ -251,6 +252,8 @@ pub struct App<B: Backend> {
     next_request_id: u64,
     /// Rows available to the list in the last frame (for paging).
     pub(crate) viewport_rows: usize,
+    /// Where the browser rows were painted, in terminal coordinates (set by the renderer).
+    pub(crate) list_area: Rect,
     /// Animation counter.
     pub(crate) tick: u64,
 }
@@ -282,7 +285,7 @@ impl<B: Backend> App<B> {
             filter: String::new(),
             filter_editing: false,
             cwd: NodeId::ROOT,
-            rows: FixedRowsState::default(),
+            rows: UniformListState::new(),
             lens_rows: BTreeMap::new(),
             marked: BTreeSet::new(),
             explain_open: false,
@@ -302,6 +305,7 @@ impl<B: Backend> App<B> {
             requested: BTreeSet::new(),
             next_request_id: 1,
             viewport_rows: 20,
+            list_area: Rect::new(0, 0, 0, 0),
             tick: 0,
         }
     }
@@ -707,6 +711,16 @@ impl<B: Backend> App<B> {
                 handled
             }
             Event::Mouse(mouse) => {
+                if self.modal.is_none() && self.view == View::Browser {
+                    let list = UniformList::new("rows", self.listing().len());
+                    if list.handle_event(self.list_area, &mut self.rows, event)
+                        == UniformListOutcome::Ignored
+                    {
+                        return Handled::Ignored;
+                    }
+                    self.request_visible_classifications();
+                    return Handled::Redraw;
+                }
                 let delta = match mouse.kind {
                     MouseEventKind::ScrollUp => -3,
                     MouseEventKind::ScrollDown => 3,
@@ -714,11 +728,6 @@ impl<B: Backend> App<B> {
                 };
                 if let Some(Modal::PlanPreview { scroll, .. }) = self.modal.as_mut() {
                     *scroll = scroll.saturating_add_signed(delta);
-                    return Handled::Redraw;
-                }
-                if self.modal.is_none() && self.view == View::Browser {
-                    let len = self.listing().len();
-                    self.rows.scroll_by(delta, len, self.viewport_rows);
                     return Handled::Redraw;
                 }
                 Handled::Ignored
@@ -789,7 +798,7 @@ impl<B: Backend> App<B> {
     }
 
     fn on_filter_changed(&mut self) {
-        self.rows = FixedRowsState::default();
+        self.rows = UniformListState::new();
         self.clamp_rows();
     }
 
@@ -948,7 +957,7 @@ impl<B: Backend> App<B> {
                 self.set_lens(Lens::Reclaimable);
                 self.lens_filter = Some(filter);
                 self.filter.clear();
-                self.rows = FixedRowsState::default();
+                self.rows = UniformListState::new();
                 self.clamp_rows();
             }
             DashPanel::Wins => {
@@ -996,14 +1005,14 @@ impl<B: Backend> App<B> {
             if tree.flags(id).contains(NodeFlags::SUMMARIZED) && !tree.has_children(id) {
                 // Summarized (`target/`): select it so enter expands it.
                 self.cwd = tree.parent(id).unwrap_or(NodeId::ROOT);
-                self.rows = FixedRowsState::default();
+                self.rows = UniformListState::new();
                 self.select_node(id);
             } else {
                 self.enter_dir(id);
             }
         } else {
             self.cwd = tree.parent(id).unwrap_or(NodeId::ROOT);
-            self.rows = FixedRowsState::default();
+            self.rows = UniformListState::new();
             self.select_node(id);
         }
     }
@@ -1028,7 +1037,7 @@ impl<B: Backend> App<B> {
                     self.explain_open = false;
                 } else if self.lens_filter.is_some() {
                     self.lens_filter = None;
-                    self.rows = FixedRowsState::default();
+                    self.rows = UniformListState::new();
                     self.clamp_rows();
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
@@ -1129,7 +1138,7 @@ impl<B: Backend> App<B> {
 
     fn enter_dir(&mut self, id: NodeId) {
         self.cwd = id;
-        self.rows = FixedRowsState::default();
+        self.rows = UniformListState::new();
         self.clamp_rows();
     }
 
@@ -1146,7 +1155,7 @@ impl<B: Backend> App<B> {
             self.lens = Lens::All;
             self.filter.clear();
             self.cwd = tree.parent(id).unwrap_or(NodeId::ROOT);
-            self.rows = FixedRowsState::default();
+            self.rows = UniformListState::new();
             self.select_node(id);
             return;
         }
@@ -1226,7 +1235,7 @@ impl<B: Backend> App<B> {
         let child = self.cwd;
         self.filter.clear();
         self.cwd = parent;
-        self.rows = FixedRowsState::default();
+        self.rows = UniformListState::new();
         self.select_node(child);
     }
 

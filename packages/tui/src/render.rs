@@ -24,12 +24,12 @@ use bmux_tui_components::progress_bar::{
 };
 use bmux_tui_components::status_bar::{StatusBarComponent, StatusSegment, StatusSeverity};
 use bmux_tui_components::tab_bar::{TabBarComponent, TabBarPolicy, TabBarState, TabItem};
+use bmux_tui_components::uniform_list::UniformList;
 
 use crate::app::{App, ExecState, MessageLevel, Modal, View};
 use crate::backend::{ActionOverride, Backend, BackendMode, CleanPlan, ItemOutcome};
 use crate::format;
 use crate::listing::{Lens, SortBy};
-use crate::widgets::{paint_component, paint_fixed_rows};
 
 pub const ACCENT: Color = Color::Cyan;
 pub const MUTED: Style = Style::new().fg(Color::BrightBlack);
@@ -146,10 +146,9 @@ fn render_header<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, top: Rect, 
         .unwrap_or(0)
         .min(tabs.width / 2);
     let tabs_area = Rect::new(tabs.x, tabs.y, tabs.width - info_width - 1, 1);
-    paint_component(
+    cx.paint_component(
         &TabBarComponent::new("lenses", &items, &state).policy(TabBarPolicy::bare()),
         tabs_area,
-        cx,
     );
     let info_area = Rect::new(tabs.right() - info_width, tabs.y, info_width, 1);
     write(
@@ -193,10 +192,9 @@ fn render_breadcrumbs(tree: &Tree, cwd: NodeId, cx: &mut PaintCx<'_, '_>, area: 
         .map(|(id, label)| BreadcrumbItem::new(id, label))
         .collect();
     let state = Cell::new(BreadcrumbsState::new(Some(items.len().saturating_sub(1))));
-    paint_component(
+    cx.paint_component(
         &BreadcrumbsComponent::new("path", &items, &state).policy(BreadcrumbsPolicy::bare()),
         area,
-        cx,
     );
 }
 
@@ -287,6 +285,7 @@ fn render_browser<B: Backend>(app: &mut App<B>, cx: &mut PaintCx<'_, '_>, body: 
         list_area.height.saturating_sub(1),
     );
     app.viewport_rows = usize::from(rows_area.height.max(1));
+    app.list_area = rows_area;
     let listing = app.listing();
     app.rows.clamp(listing.len(), app.viewport_rows);
     let Some(tree) = app.tree.clone() else {
@@ -330,11 +329,12 @@ fn render_browser<B: Backend>(app: &mut App<B>, cx: &mut PaintCx<'_, '_>, body: 
             parent_total,
             max,
         };
-        paint_fixed_rows(
-            cx,
+        // The row painter borrows `app`, so paint with a copy of the (already clamped) state.
+        let mut rows = app.rows;
+        UniformList::new("rows", listing.len()).paint(
             rows_area,
-            listing.len(),
-            app.rows,
+            &mut rows,
+            cx,
             |index, area, selected, cx| {
                 ctx.paint(listing[index], area, selected, cx);
             },
@@ -350,7 +350,7 @@ fn render_browser<B: Backend>(app: &mut App<B>, cx: &mut PaintCx<'_, '_>, body: 
             &state,
             TextBlock::new(Text::from_lines(lines)).wrap(TextWrap::None),
         );
-        paint_component(&pane, area, cx);
+        cx.paint_component(&pane, area);
     }
 }
 
@@ -462,12 +462,11 @@ impl<B: Backend> RowCtx<'_, B> {
                 }),
                 ..ProgressBarStyles::default()
             };
-            paint_component(
+            cx.paint_component(
                 &ProgressBarComponent::new("size-bar", ProgressBarValue::ratio(size, self.max))
                     .policy(ProgressBarPolicy::bare().symbols("█", " ", "▌"))
                     .styles(styles),
                 bar_area,
-                cx,
             );
             x = x.saturating_add(Columns::BAR);
         }
@@ -750,7 +749,7 @@ fn paint_text_modal(
     let block = TextBlock::new(Text::from_lines(lines))
         .wrap(TextWrap::None)
         .vertical_scroll(scroll);
-    paint_component(&ModalFrameComponent::new("modal", frame, block), area, cx);
+    cx.paint_component(&ModalFrameComponent::new("modal", frame, block), area);
 }
 
 fn render_explain_modal<B: Backend>(app: &mut App<B>, cx: &mut PaintCx<'_, '_>, full: Rect) {
@@ -1012,12 +1011,11 @@ fn render_execution(exec: &ExecState, cx: &mut PaintCx<'_, '_>, full: Rect) {
             format!("{finished}/{total} items"),
         )
     };
-    paint_component(
+    cx.paint_component(
         &ProgressBarComponent::new("exec", value)
             .label(&label)
             .policy(ProgressBarPolicy::compact()),
         gauge_area,
-        cx,
     );
 }
 
@@ -1137,10 +1135,9 @@ fn render_progress<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, body: Rec
         || ProgressBarValue::indeterminate((app.tick % u64::from(u16::MAX)) as u16),
         |expected| ProgressBarValue::determinate(p.entries().min(expected), expected),
     );
-    paint_component(
+    cx.paint_component(
         &ProgressBarComponent::new("scan", value).policy(ProgressBarPolicy::compact()),
         row(area, 2),
-        cx,
     );
     let secs = p.elapsed.as_secs_f64().max(0.001);
     #[allow(
@@ -1262,13 +1259,12 @@ fn render_status<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, area: Rect)
         right.push(StatusSegment::new(mode_text).severity(StatusSeverity::Muted));
     }
     cx.fill(rect_local(area), " ", Style::new().bg(Color::Indexed(236)));
-    paint_component(
+    cx.paint_component(
         &StatusBarComponent::new("status")
             .left(&left)
             .center(&center)
             .right(&right),
         area,
-        cx,
     );
 }
 
@@ -1314,7 +1310,7 @@ fn render_hints<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, area: Rect) 
     } else {
         BROWSER
     };
-    paint_component(&KeyHintBarComponent::new("hints", hints), area, cx);
+    cx.paint_component(&KeyHintBarComponent::new("hints", hints), area);
 }
 
 #[cfg(test)]

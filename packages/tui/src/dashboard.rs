@@ -25,7 +25,7 @@ use crate::app::App;
 use crate::backend::Backend;
 use crate::format;
 use crate::render::{ACCENT, MUTED, SELECTED, row, styled, write};
-use crate::widgets::{UsageGauge, paint_component};
+use crate::widgets::UsageGauge;
 
 /// Width at which panels sit side by side.
 const WIDE: u16 = 110;
@@ -306,7 +306,7 @@ fn panel(cx: &mut PaintCx<'_, '_>, area: Rect, title: &str, focused: bool) -> Re
         &state,
         TextBlock::new(Text::from_lines(Vec::new())),
     );
-    paint_component(&pane, area, cx);
+    cx.paint_component(&pane, area);
     Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2)
 }
 
@@ -469,12 +469,11 @@ fn trend_row(volume: &VolumeSummary, cx: &mut PaintCx<'_, '_>, area: Rect) {
         latest: Style::new().fg(Color::BrightWhite),
         ..SparklineStyles::default()
     };
-    paint_component(
+    cx.paint_component(
         &SparklineComponent::new("trend", &samples)
             .policy(SparklinePolicy::bare())
             .styles(styles),
         Rect::new(area.x + label_width, area.y, spark_width, 1),
-        cx,
     );
     let forecast = match (volume.growth_per_day, volume.full_in_secs) {
         (Some(rate), Some(full)) if rate > 0 => vec![
@@ -605,12 +604,11 @@ fn size_bar(value: u64, max: u64, cx: &mut PaintCx<'_, '_>, area: Rect, color: C
         complete: Style::new().fg(color),
         ..ProgressBarStyles::default()
     };
-    paint_component(
+    cx.paint_component(
         &ProgressBarComponent::new("dash-bar", ProgressBarValue::ratio(value, max.max(1)))
             .policy(ProgressBarPolicy::bare().symbols("█", " ", "▌"))
             .styles(styles),
         area,
-        cx,
     );
 }
 
