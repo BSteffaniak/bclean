@@ -209,6 +209,10 @@ async fn root_level_changes_never_rescan_unchanged_subtrees() {
         .await
         .unwrap();
     assert_eq!(engine.snapshot_ref(&root).unwrap().generation, 3);
+
+    // Status counts the one full scan and every incremental refresh.
+    let status = &engine.root_statuses()[0];
+    assert_eq!((status.full_scans, status.refreshes), (1, 3));
 }
 
 /// bclean's own snapshot and database writes must never feed back into the index.

@@ -4,6 +4,7 @@
 
 //! bclean daemon: index ownership, watching, policies, alerts, and service install.
 
+pub mod priority;
 pub mod runtime;
 pub mod server;
 pub mod service;

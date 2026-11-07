@@ -364,12 +364,14 @@ dependencies = [
  "bclean_watch",
  "crossbeam-channel",
  "filetime",
+ "libc",
  "log",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

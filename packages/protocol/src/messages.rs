@@ -206,6 +206,13 @@ pub struct RootStatus {
     pub nodes: u64,
     /// Total allocated bytes.
     pub total_allocated: u64,
+    /// Full scans completed since the daemon started. A steadily climbing count while the
+    /// filesystem is quiet means change handling is escalating to rescans.
+    #[serde(default)]
+    pub full_scans: u64,
+    /// Incremental (watcher-driven) refreshes applied since the daemon started.
+    #[serde(default)]
+    pub refreshes: u64,
 }
 
 /// Scan progress counters.

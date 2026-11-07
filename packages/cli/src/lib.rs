@@ -90,6 +90,18 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 #[allow(clippy::too_many_lines)] // one flat dispatch table reads best
 pub fn execute(cli: Cli) -> anyhow::Result<bool> {
     let ctx = Ctx::load(cli.config.clone(), cli.no_daemon)?;
+    if matches!(
+        cli.command,
+        Some(Command::Daemon {
+            command: DaemonCommand::Run
+        })
+    ) && ctx.settings.config().daemon.background_priority
+    {
+        // Before the runtime starts its threads, which inherit the priority.
+        if let Err(e) = bclean_daemon::priority::lower_process_priority() {
+            log::warn!("could not lower the daemon's priority: {e}");
+        }
+    }
     let rt = runtime()?;
     let Some(command) = cli.command else {
         return browse(&ctx, &rt, cli.path.as_deref());

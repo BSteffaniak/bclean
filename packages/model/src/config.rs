@@ -710,6 +710,9 @@ pub struct DaemonConfig {
     pub socket: Option<String>,
     /// Exit after this long with no clients and no enabled policies.
     pub idle_exit: Option<DurationSpec>,
+    /// Run the daemon at background CPU and I/O priority (nice 10 / below-normal), so scans
+    /// yield to foreground work. Installed services already run this way.
+    pub background_priority: bool,
 }
 
 impl Default for DaemonConfig {
@@ -718,6 +721,7 @@ impl Default for DaemonConfig {
             autostart: true,
             socket: None,
             idle_exit: None,
+            background_priority: true,
         }
     }
 }

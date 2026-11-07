@@ -86,6 +86,11 @@ alarms, and can auto-clean).
   standalone scan.
 - Unix socket (macOS/Linux) / named pipe (Windows), newline-delimited JSON frames.
 - `bclean service install` registers launchd / systemd `--user` / Task Scheduler.
+- The daemon runs at background priority (nice 10 and utility-class disk I/O on macOS,
+  below-normal on Windows), whether installed as a service or spawned by a client
+  (`daemon.background_priority`, default on).
+- `bclean status` shows full scans and incremental refreshes per root since the daemon
+  started: after the initial scan, full scans should stay flat while refreshes climb.
 
 ## Configuration
 

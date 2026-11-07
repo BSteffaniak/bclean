@@ -283,6 +283,10 @@ struct RootState {
     summary_refreshed: BTreeMap<PathBuf, Instant>,
     /// Summarized directories with changes whose re-measurement was postponed.
     deferred_summaries: BTreeSet<PathBuf>,
+    /// Full scans completed since the engine started.
+    full_scans: u64,
+    /// Incremental refreshes applied since the engine started.
+    refreshes: u64,
 }
 
 #[derive(Debug)]
@@ -640,6 +644,7 @@ impl Engine {
             state.scanned_at = Some(now);
             state.cursor = cursor;
             state.deferred_summaries.clear();
+            state.full_scans += 1;
             state.backend = format!("{:?}", outcome.backend).to_uppercase();
         }
         self.persist(slot).await?;
@@ -1071,6 +1076,7 @@ impl Engine {
                 state.summary_refreshed.insert(path, finished);
             }
             state.deferred_summaries.extend(deferred);
+            state.refreshes += 1;
             if changed {
                 state.classes = classes;
                 state.generation += 1;
@@ -1551,6 +1557,8 @@ impl Engine {
                         .tree
                         .as_ref()
                         .map_or(0, |t| t.size(NodeId::ROOT, SizeMode::Allocated)),
+                    full_scans: state.full_scans,
+                    refreshes: state.refreshes,
                 }
             })
             .collect()

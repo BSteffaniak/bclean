@@ -598,6 +598,8 @@ fn print_daemon_status(status: &DaemonStatus) {
         ("SIZE", Align::Right),
         ("NODES", Align::Right),
         ("GEN", Align::Right),
+        ("FULL SCANS", Align::Right),
+        ("REFRESHES", Align::Right),
         ("SCANNED", Align::Left),
         ("STATE", Align::Left),
     ]);
@@ -607,6 +609,8 @@ fn print_daemon_status(status: &DaemonStatus) {
             size(r.total_allocated),
             r.nodes.to_string(),
             r.generation.to_string(),
+            r.full_scans.to_string(),
+            r.refreshes.to_string(),
             r.scanned_at
                 .map_or_else(|| "never".to_owned(), |t| ago(t, now)),
             r.progress.map_or_else(
