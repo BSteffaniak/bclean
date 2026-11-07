@@ -37,6 +37,7 @@ pub struct Server<H> {
     events: broadcast::Sender<Event>,
     shutdown: watch::Sender<bool>,
     version: String,
+    build: Option<String>,
 }
 
 impl<H: Handler> Server<H> {
@@ -50,7 +51,16 @@ impl<H: Handler> Server<H> {
             events,
             shutdown,
             version: version.into(),
+            build: None,
         }
+    }
+
+    /// Reports `build` (an executable fingerprint) in the handshake, so clients from a
+    /// different build of the same version restart this daemon.
+    #[must_use]
+    pub fn with_build(mut self, build: Option<String>) -> Self {
+        self.build = build;
+        self
     }
 
     /// Sender used by the engine to publish events to subscribers.
@@ -109,6 +119,7 @@ impl<H: Handler> Server<H> {
                     protocol_version: PROTOCOL_VERSION,
                     daemon_version: self.version.clone(),
                     pid: std::process::id(),
+                    build: self.build.clone(),
                 });
                 if writer.lock().await.write(&reply).await.is_err() {
                     return;
@@ -119,7 +130,33 @@ impl<H: Handler> Server<H> {
 
         let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
         let mut topics: BTreeSet<Topic> = BTreeSet::new();
-        while let Ok(Some(frame)) = reader.read::<ClientFrame>().await {
+        while let Ok(Some(value)) = reader.read::<serde_json::Value>().await {
+            let frame = match serde_json::from_value::<ClientFrame>(value.clone()) {
+                Ok(frame) => frame,
+                Err(e) => {
+                    // A newer client sent a request this daemon doesn't know: say so instead
+                    // of dropping the connection.
+                    let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
+                        break;
+                    };
+                    log::warn!("unsupported request from client: {e}");
+                    let reply = ServerFrame::Response {
+                        id,
+                        result: Err(RemoteError::new(
+                            "UNSUPPORTED_REQUEST",
+                            format!(
+                                "this bclean daemon ({}) is older than the client and does not \
+                                 support the request; restart it with `bclean daemon restart`",
+                                self.version
+                            ),
+                        )),
+                    };
+                    if writer.lock().await.write(&reply).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
             let ClientFrame::Request { id, request } = frame else {
                 break;
             };
@@ -240,7 +277,9 @@ mod tests {
                     .join("d.sock"),
             )
         };
-        let server = Arc::new(Server::new(Arc::new(Echo), env!("CARGO_PKG_VERSION")));
+        let server = Arc::new(
+            Server::new(Arc::new(Echo), env!("CARGO_PKG_VERSION")).with_build(Some("b1".into())),
+        );
         let events = server.events();
         let serving = tokio::spawn({
             let server = Arc::clone(&server);
@@ -261,6 +300,54 @@ mod tests {
             Ok(Response::Volumes { .. })
         ));
         assert!(client.request(Request::Status).await.is_err());
+        assert_eq!(client.server().build.as_deref(), Some("b1"));
+
+        // A request this daemon doesn't know (from a newer client) gets an error reply, and the
+        // connection keeps working.
+        let (mut reader, mut writer) = bclean_protocol::connect(&options.endpoint).await.unwrap();
+        writer
+            .write(&ClientFrame::Hello(bclean_protocol::ClientHello {
+                protocol_version: PROTOCOL_VERSION,
+                client_version: "future".into(),
+                build: None,
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            reader.read::<ServerFrame>().await.unwrap(),
+            Some(ServerFrame::Hello(_))
+        ));
+        writer
+            .write(&serde_json::json!({
+                "type": "REQUEST",
+                "id": 7,
+                "request": { "kind": "FROM_THE_FUTURE" },
+            }))
+            .await
+            .unwrap();
+        let Some(ServerFrame::Response {
+            id: 7,
+            result: Err(error),
+        }) = reader.read::<ServerFrame>().await.unwrap()
+        else {
+            panic!("expected an error reply");
+        };
+        assert_eq!(error.code, "UNSUPPORTED_REQUEST");
+        assert!(error.message.contains("bclean daemon restart"), "{error}");
+        writer
+            .write(&ClientFrame::Request {
+                id: 8,
+                request: Request::Volumes,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            reader.read::<ServerFrame>().await.unwrap(),
+            Some(ServerFrame::Response {
+                id: 8,
+                result: Ok(_)
+            })
+        ));
 
         client
             .request(Request::Subscribe {

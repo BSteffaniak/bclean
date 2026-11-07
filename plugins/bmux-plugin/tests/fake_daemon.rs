@@ -81,6 +81,7 @@ fn spawn_daemon(endpoint: Endpoint, state: Arc<Mutex<State>>) {
                                     protocol_version: PROTOCOL_VERSION,
                                     daemon_version: "test".to_owned(),
                                     pid: 42,
+                                    build: None,
                                 });
                                 writer.write(&hello).await.unwrap();
                                 continue;

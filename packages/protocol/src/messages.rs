@@ -44,6 +44,10 @@ pub struct ClientHello {
     pub protocol_version: u32,
     /// Client package version.
     pub client_version: String,
+    /// Client executable fingerprint ([`crate::executable_build_id`]), if it cares about
+    /// running the same build as the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 /// Daemon handshake.
@@ -55,6 +59,9 @@ pub struct ServerHello {
     pub daemon_version: String,
     /// Daemon process id.
     pub pid: u32,
+    /// Daemon executable fingerprint ([`crate::executable_build_id`]); absent on older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 /// Error returned by the daemon for a request.

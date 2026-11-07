@@ -208,7 +208,8 @@ pub async fn handle(
 /// * If the endpoint cannot be bound
 pub async fn run_daemon(engine: Engine, endpoint: Endpoint, version: &str) -> std::io::Result<()> {
     let handler = Arc::new(DaemonHandler::new(engine.clone(), version));
-    let server = Arc::new(Server::new(handler, version));
+    let server =
+        Arc::new(Server::new(handler, version).with_build(bclean_protocol::executable_build_id()));
     let forward = tokio::spawn(forward_events(engine.clone(), server.events()));
     let shutdown = server.shutdown_handle();
     let monitor = tokio::spawn(run_monitor(engine.clone(), shutdown.subscribe()));

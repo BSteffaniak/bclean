@@ -78,6 +78,7 @@ impl Ctx {
             ];
         }
         VERSION.clone_into(&mut options.client_version);
+        options.build = bclean_protocol::executable_build_id();
         options
     }
 

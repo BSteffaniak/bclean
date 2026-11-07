@@ -64,6 +64,11 @@ pub struct ClientOptions {
     pub client_version: String,
     /// Restart the daemon when its version differs from `client_version`.
     pub restart_on_version_mismatch: bool,
+    /// This client's executable fingerprint ([`bclean_protocol::executable_build_id`]). When
+    /// set, a daemon reporting a different (or no) fingerprint is restarted like a version
+    /// mismatch: it runs older code than this client. Leave `None` in clients that are not the
+    /// daemon's own executable (plugins).
+    pub build: Option<String>,
 }
 
 impl ClientOptions {
@@ -79,6 +84,7 @@ impl ClientOptions {
             start_timeout: Duration::from_secs(10),
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
             restart_on_version_mismatch: true,
+            build: None,
         }
     }
 }
@@ -110,18 +116,17 @@ impl Client {
             None => return Err(ClientError::NotRunning(options.endpoint.clone())),
         };
 
-        let mismatch = client.server.protocol_version != PROTOCOL_VERSION
-            || (options.restart_on_version_mismatch
-                && client.server.daemon_version != options.client_version);
-        if !mismatch || !options.autostart {
+        if !needs_restart(&client.server, options) || !options.autostart {
             return Ok(client);
         }
         log::info!(
-            "restarting bclean daemon (daemon {} / protocol {}, client {} / protocol {})",
+            "restarting bclean daemon (daemon {} / protocol {} / build {}, client {} / protocol {} / build {})",
             client.server.daemon_version,
             client.server.protocol_version,
+            client.server.build.as_deref().unwrap_or("-"),
             options.client_version,
-            PROTOCOL_VERSION
+            PROTOCOL_VERSION,
+            options.build.as_deref().unwrap_or("-")
         );
         client.shutdown_daemon(options).await?;
         spawn_daemon(options)?;
@@ -137,20 +142,27 @@ impl Client {
         let Ok((reader, writer)) = bclean_protocol::connect(&options.endpoint).await else {
             return Ok(None);
         };
-        Self::handshake(reader, writer, &options.client_version)
-            .await
-            .map(Some)
+        Self::handshake(
+            reader,
+            writer,
+            &options.client_version,
+            options.build.clone(),
+        )
+        .await
+        .map(Some)
     }
 
     async fn handshake(
         mut reader: FrameReader,
         mut writer: FrameWriter,
         client_version: &str,
+        build: Option<String>,
     ) -> Result<Self, ClientError> {
         writer
             .write(&ClientFrame::Hello(ClientHello {
                 protocol_version: PROTOCOL_VERSION,
                 client_version: client_version.to_owned(),
+                build,
             }))
             .await?;
         match reader.read::<ServerFrame>().await? {
@@ -241,6 +253,15 @@ impl Client {
     }
 }
 
+/// Whether a daemon that answered with `server` runs different code than this client: another
+/// protocol, package version, or (when the client sets one) executable build.
+fn needs_restart(server: &ServerHello, options: &ClientOptions) -> bool {
+    server.protocol_version != PROTOCOL_VERSION
+        || (options.restart_on_version_mismatch
+            && (server.daemon_version != options.client_version
+                || (options.build.is_some() && server.build != options.build)))
+}
+
 /// Spawns the daemon fully detached from the current terminal/session.
 ///
 /// # Errors
@@ -296,6 +317,28 @@ mod tests {
     use super::*;
     use bclean_protocol::DaemonStatus;
 
+    #[test]
+    fn restarts_daemons_running_a_different_build() {
+        let hello = |version: &str, build: Option<&str>| ServerHello {
+            protocol_version: PROTOCOL_VERSION,
+            daemon_version: version.to_owned(),
+            pid: 1,
+            build: build.map(str::to_owned),
+        };
+        let mut options = ClientOptions::new(endpoint("restart"));
+        "1.0".clone_into(&mut options.client_version);
+        // Clients without a fingerprint (plugins) only compare versions.
+        assert!(!needs_restart(&hello("1.0", Some("a")), &options));
+        assert!(needs_restart(&hello("0.9", None), &options));
+        // The CLI also restarts a daemon built from other code, or too old to report a build.
+        options.build = Some("a".to_owned());
+        assert!(!needs_restart(&hello("1.0", Some("a")), &options));
+        assert!(needs_restart(&hello("1.0", Some("b")), &options));
+        assert!(needs_restart(&hello("1.0", None), &options));
+        options.restart_on_version_mismatch = false;
+        assert!(!needs_restart(&hello("1.0", Some("b")), &options));
+    }
+
     fn endpoint(tag: &str) -> Endpoint {
         if cfg!(windows) {
             Endpoint::Namespaced(format!("bclean-client-test-{tag}-{}", std::process::id()))
@@ -320,6 +363,7 @@ mod tests {
                                 protocol_version: PROTOCOL_VERSION,
                                 daemon_version: version.to_owned(),
                                 pid: 1,
+                                build: None,
                             }),
                             ClientFrame::Request { id, .. } => {
                                 writer

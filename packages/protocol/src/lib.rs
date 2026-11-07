@@ -6,15 +6,17 @@
 //!
 //! Transport is a local socket (Unix domain socket on macOS/Linux, named pipe on Windows)
 //! carrying newline-delimited JSON frames. Every connection starts with a [`ClientFrame::Hello`]
-//! / [`ServerFrame::Hello`] exchange; a client that sees a different [`PROTOCOL_VERSION`] or
-//! daemon version restarts the daemon.
+//! / [`ServerFrame::Hello`] exchange; a client that sees a different [`PROTOCOL_VERSION`],
+//! daemon version, or executable build ([`executable_build_id`]) restarts the daemon.
 //!
 //! Large payloads (scan trees) are never sent over the socket: the daemon persists snapshots to
 //! the index directory and replies with a [`SnapshotRef`] the client loads from disk.
 
+mod build;
 mod messages;
 mod transport;
 
+pub use build::executable_build_id;
 pub use messages::*;
 pub use transport::*;
 
