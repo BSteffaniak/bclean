@@ -11,10 +11,10 @@
 //!
 //! The publisher never ships a misattributed item. Its first successful `set-status-item` is
 //! followed by a `list-status-items` check that the item is owned by `bclean`. If the host
-//! relayed the call under another identity (bmux attributes IPC-relayed calls to `bmux.core`),
-//! the item is removed again and publishing is disabled for this activation. A transport
-//! failure (for example, a dynamically loaded plugin that has no route to the bundled tab-bar
-//! provider) also disables it. Either way the `segment`/`status` commands keep working.
+//! relayed the call under another identity (bmux before `b3dc1afa` attributed relayed calls to
+//! `bmux.core`), the item is removed again and publishing is disabled for this activation. A
+//! transport failure (for example, an older bmux with no route from a dynamically loaded plugin
+//! to the bundled tab-bar provider) also disables it. Either way the `segment`/`status` commands keep working.
 
 use std::collections::BTreeMap;
 
