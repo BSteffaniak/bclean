@@ -88,6 +88,10 @@ pub struct PlanItem {
     pub category: Option<String>,
     /// Human-readable reason this item was selected.
     pub reason: String,
+    /// Entries (files, directories, links) the target is expected to contain, itself
+    /// included, when known from the index. Used as the total for removal progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<u64>,
 }
 
 impl PlanItem {
@@ -117,6 +121,7 @@ impl PlanItem {
             rule_id: class.rule_id.clone(),
             category: class.category.clone(),
             reason,
+            entries: None,
         }
     }
 }

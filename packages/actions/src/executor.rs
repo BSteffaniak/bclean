@@ -14,6 +14,7 @@
 //! blocking thread (for example `tokio::task::spawn_blocking`).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bclean_model::{ActionSpec, FallbackAction};
@@ -24,7 +25,7 @@ use crate::busy::check_busy;
 use crate::journal::{JournalEntry, JournalOutcome, PerformedAction, UndoInfo, new_entry_id};
 use crate::plan::{EntryKind, Plan, PlanItem};
 use crate::protect::{Protector, expand_tilde, normalize};
-use crate::remove::remove_path;
+use crate::remove::{remove_path, remove_path_counted};
 use crate::shell::{self, render_template};
 use crate::space::{SpaceProbe, SystemSpaceProbe};
 use crate::{CancelToken, now_unix};
@@ -175,6 +176,17 @@ pub enum Progress<'a> {
         /// The item.
         item: &'a PlanItem,
     },
+    /// Periodic progress inside a long-running item (removals report entries removed).
+    Advanced {
+        /// Zero-based position.
+        index: usize,
+        /// Number of items.
+        total: usize,
+        /// Entries removed so far.
+        removed: u64,
+        /// Expected entries ([`PlanItem::entries`]), if known.
+        entries: Option<u64>,
+    },
     /// Finished an item.
     Finished {
         /// Zero-based position.
@@ -291,8 +303,9 @@ impl Executor {
 
     /// Executes `plan` in order. Shadow plans and dry-run executors never modify anything.
     ///
-    /// Cancellation is checked between items and while waiting for commands; remaining items
-    /// are reported as [`ItemOutcome::Cancelled`]. Journal records are returned, not written
+    /// Cancellation is checked between items, while waiting for commands, and between entries
+    /// of a removal (what was removed stays removed); remaining items are reported as
+    /// [`ItemOutcome::Cancelled`]. Removals report [`Progress::Advanced`] about every 100ms. Journal records are returned, not written
     /// (see the module docs).
     pub fn execute(
         &self,
@@ -315,7 +328,15 @@ impl Executor {
             } else if dry_run {
                 self.dry_run_item(item)
             } else {
-                self.run_item(item, cancel)
+                let entries = item.entries;
+                self.run_item(item, cancel, &mut |removed| {
+                    progress(Progress::Advanced {
+                        index,
+                        total,
+                        removed,
+                        entries,
+                    });
+                })
             };
             if matches!(result.outcome, ItemOutcome::Cancelled) {
                 report.cancelled = true;
@@ -358,12 +379,17 @@ impl Executor {
         result
     }
 
-    fn run_item(&self, item: &PlanItem, cancel: &CancelToken) -> ItemResult {
+    fn run_item(
+        &self,
+        item: &PlanItem,
+        cancel: &CancelToken,
+        tick: &mut dyn FnMut(u64),
+    ) -> ItemResult {
         if let Err(reason) = self.preflight(item) {
             return blank_result(item, ItemOutcome::Skipped(reason));
         }
         let before = self.probe.free_space(&item.path).ok();
-        let acted = self.act(item, cancel);
+        let acted = self.act(item, cancel, tick);
         let after = self.probe.free_space(&item.path).ok();
         let measured = match (before, after) {
             (Some(b), Some(a)) => {
@@ -392,11 +418,16 @@ impl Executor {
         }
     }
 
-    fn act(&self, item: &PlanItem, cancel: &CancelToken) -> Result<Performed, ActError> {
+    fn act(
+        &self,
+        item: &PlanItem,
+        cancel: &CancelToken,
+        tick: &mut dyn FnMut(u64),
+    ) -> Result<Performed, ActError> {
         let path = &item.path;
         match &item.action {
             ActionSpec::Report => Err(ActError::Skip(SkipReason::ReportOnly)),
-            ActionSpec::Delete => do_delete(path),
+            ActionSpec::Delete => do_delete(path, cancel, tick),
             ActionSpec::Trash => do_trash(path),
             ActionSpec::Command { run, cwd, fallback } => {
                 self.do_command(item, run, cwd.as_deref(), *fallback, cancel)
@@ -501,11 +532,13 @@ impl Executor {
             ),
             Err(err) => format!("could not run `{line}` in {}: {err}", cwd.display()),
         };
-        let fallback_fn: fn(&Path) -> Result<Performed, ActError> = match fallback {
-            FallbackAction::None => return Err(ActError::Fail(failure)),
-            FallbackAction::Delete => do_delete,
-            FallbackAction::Trash => do_trash,
+        let fallback_fn = |path: &Path| match fallback {
+            FallbackAction::Delete => do_delete(path, cancel, &mut |_| {}),
+            FallbackAction::Trash | FallbackAction::None => do_trash(path),
         };
+        if fallback == FallbackAction::None {
+            return Err(ActError::Fail(failure));
+        }
         // The command may have partially run: re-check before falling back.
         match self.check_path(path, item.kind) {
             Ok(()) => {}
@@ -524,9 +557,48 @@ impl Executor {
     }
 }
 
-fn do_delete(path: &Path) -> Result<Performed, ActError> {
-    remove_path(path).map_err(|e| ActError::Fail(format!("delete failed: {e}")))?;
-    Ok(Performed::simple(PerformedAction::Delete, true))
+/// How often a running removal reports progress.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+fn do_delete(
+    path: &Path,
+    cancel: &CancelToken,
+    tick: &mut dyn FnMut(u64),
+) -> Result<Performed, ActError> {
+    let removed = AtomicU64::new(0);
+    // The removal runs on its own thread (fanning out to rayon) while this one reports the
+    // count, so `tick` (the caller's non-`Send` progress callback) stays on this thread.
+    let result = std::thread::scope(|scope| {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let counter = &removed;
+        scope.spawn(move || {
+            let _ = done_tx.send(remove_path_counted(path, counter, cancel));
+        });
+        let mut reported = 0;
+        loop {
+            match done_rx.recv_timeout(PROGRESS_INTERVAL) {
+                Ok(result) => break result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let now = removed.load(Ordering::Relaxed);
+                    if now != reported {
+                        reported = now;
+                        tick(now);
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err(std::io::Error::other("removal thread panicked"));
+                }
+            }
+        }
+    });
+    tick(removed.load(Ordering::Relaxed));
+    match result {
+        Ok(()) => Ok(Performed::simple(PerformedAction::Delete, true)),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted && cancel.is_cancelled() => {
+            Err(ActError::Cancelled)
+        }
+        Err(e) => Err(ActError::Fail(format!("delete failed: {e}"))),
+    }
 }
 
 fn do_trash(path: &Path) -> Result<Performed, ActError> {

@@ -107,6 +107,16 @@ fn execution_event(progress: &ActionProgress) -> Option<ExecutionEvent> {
         ActionProgress::ItemStarted { index, .. } => {
             Some(ExecutionEvent::ItemStarted { index: *index })
         }
+        ActionProgress::ItemAdvanced {
+            index,
+            removed,
+            entries,
+            ..
+        } => Some(ExecutionEvent::ItemProgress {
+            index: *index,
+            removed: *removed,
+            entries: *entries,
+        }),
         ActionProgress::ItemFinished { index, result, .. } => Some(ExecutionEvent::ItemFinished {
             index: *index,
             outcome: item_outcome(result),
@@ -398,7 +408,9 @@ impl Backend for LocalBackend {
 
 fn remap_index(event: &mut ExecutionEvent, index_of: &[usize]) {
     match event {
-        ExecutionEvent::ItemStarted { index } | ExecutionEvent::ItemFinished { index, .. } => {
+        ExecutionEvent::ItemStarted { index }
+        | ExecutionEvent::ItemProgress { index, .. }
+        | ExecutionEvent::ItemFinished { index, .. } => {
             if let Some(&i) = index_of.get(*index) {
                 *index = i;
             }

@@ -68,6 +68,10 @@ alarms, and can auto-clean).
   subdirectories. Unchanged subtrees are never read, so a dotfile saved in `~` costs one
   directory listing, not a rescan of the home directory. Subtree rescans happen only when the
   event history is incomplete (dropped events, FSEvents `MustScanSubDirs`, root moved).
+- Those rescans are budgeted per root (`monitor.rescan_budget_percent`, default 5% of wall
+  time): after a rescan taking `T`, the next waits `T × 19`, and requests arriving meanwhile
+  are merged. Under heavy filesystem load FSEvents can lose history for a whole root every few
+  seconds; unbudgeted, each loss cost a full home-directory scan on every core, back to back.
 - Changes inside a summarized directory (`target/` during a build) re-measure it at most once
   per `monitor.summary_refresh_interval` (default 1m).
 - bclean's own data, cache, and runtime directories are ignored by the watcher, so its snapshot
@@ -86,9 +90,9 @@ alarms, and can auto-clean).
   standalone scan.
 - Unix socket (macOS/Linux) / named pipe (Windows), newline-delimited JSON frames.
 - `bclean service install` registers launchd / systemd `--user` / Task Scheduler.
-- The daemon runs at background priority (nice 10 and utility-class disk I/O on macOS,
-  below-normal on Windows), whether installed as a service or spawned by a client
-  (`daemon.background_priority`, default on).
+- The daemon runs at background CPU priority (nice 10, below-normal on Windows), whether
+  installed as a service or spawned by a client (`daemon.background_priority`, default on).
+  Disk I/O is not throttled, because user-requested deletions run in the daemon.
 - `bclean status` shows full scans and incremental refreshes per root since the daemon
   started: after the initial scan, full scans should stay flat while refreshes climb.
 
@@ -100,6 +104,11 @@ Rules, policies, and alerts are keyed maps so layers compose (a user layer can s
 rules-engine implementation.
 
 ## Safety
+
+Deletion is a work-stealing parallel traversal (every subdirectory is a task; on Unix,
+`openat`/`unlinkat` relative to directory handles with `O_NOFOLLOW`). It counts removed
+entries against the index's entry count for the target, so progress advances within one huge
+item (a `target/` directory) and cancellation stops between entries.
 
 Never-touch list; skip busy targets (lock files, processes with cwd inside); per-run budgets;
 battery/idle conditions; every action journaled; `bclean undo` for reversible actions; new

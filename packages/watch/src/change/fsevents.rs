@@ -431,6 +431,14 @@ extern "C" fn callback(
             & (ffi::kFSEventStreamEventFlagUserDropped | ffi::kFSEventStreamEventFlagKernelDropped)
             != 0
         {
+            log::warn!(
+                "FSEvents dropped events ({}); the index will be rescanned",
+                if flag & ffi::kFSEventStreamEventFlagKernelDropped != 0 {
+                    "kernel queue overflow"
+                } else {
+                    "bclean fell behind"
+                }
+            );
             RawEvent::RescanAll
         } else if flag
             & (ffi::kFSEventStreamEventFlagRootChanged
@@ -439,6 +447,10 @@ extern "C" fn callback(
         {
             // The root itself was moved, deleted, or recreated, or FSEvents coalesced changes
             // below this directory: the whole subtree must be reconciled.
+            log::info!(
+                "FSEvents: {} must be rescanned (flags {flag:#x})",
+                path.display()
+            );
             RawEvent::Rescan(path)
         } else {
             // A plain directory-level event: entries of this directory changed.

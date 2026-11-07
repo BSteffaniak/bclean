@@ -235,6 +235,17 @@ pub enum ActionProgress {
         /// Target path.
         path: PathBuf,
     },
+    /// Periodic progress inside a long-running item.
+    ItemAdvanced {
+        /// Zero-based index.
+        index: usize,
+        /// Number of items.
+        total: usize,
+        /// Entries removed so far.
+        removed: u64,
+        /// Expected entries, if known from the index.
+        entries: Option<u64>,
+    },
     /// An item finished.
     ItemFinished {
         /// Zero-based index.
@@ -287,6 +298,11 @@ struct RootState {
     full_scans: u64,
     /// Incremental refreshes applied since the engine started.
     refreshes: u64,
+    /// Watcher-requested subtree rescans waiting for the rescan budget.
+    pending_rescans: BTreeSet<PathBuf>,
+    /// Earliest start of the next watcher-requested rescan (see
+    /// `monitor.rescan_budget_percent`).
+    rescan_not_before: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -721,8 +737,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Re-measures postponed summarized directories whose
-    /// `monitor.summary_refresh_interval` has elapsed.
+    /// Runs postponed work that has become due: rescans waiting for the rescan budget, and
+    /// summarized directories whose `monitor.summary_refresh_interval` has elapsed.
     ///
     /// # Errors
     ///
@@ -735,6 +751,7 @@ impl Engine {
             .summary_refresh_interval
             .duration();
         for slot in self.slots() {
+            self.run_due_rescans(&slot).await?;
             let due: Vec<PathBuf> = {
                 let state = slot.state.read();
                 state
@@ -927,16 +944,7 @@ impl Engine {
     }
 
     async fn apply_dirs(&self, dirs: Vec<PathBuf>, mode: RefreshMode) -> Result<()> {
-        let mut by_root: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-        for dir in dirs {
-            if self.is_own_path(&dir) {
-                continue;
-            }
-            if let Some(root) = self.root_for(&dir) {
-                by_root.entry(root).or_default().push(dir);
-            }
-        }
-        for (root, mut dirs) in by_root {
+        for (root, mut dirs) in self.group_by_root(dirs) {
             dirs.sort();
             dirs.dedup();
             let slot = self.slot(&root);
@@ -947,6 +955,99 @@ impl Engine {
             self.refresh_locked(&slot, dirs, mode).await?;
         }
         Ok(())
+    }
+
+    /// Groups `dirs` by loaded root, dropping paths outside every root and bclean's own paths.
+    fn group_by_root(&self, dirs: Vec<PathBuf>) -> BTreeMap<PathBuf, Vec<PathBuf>> {
+        let mut by_root: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        for dir in dirs {
+            if self.is_own_path(&dir) {
+                continue;
+            }
+            if let Some(root) = self.root_for(&dir) {
+                by_root.entry(root).or_default().push(dir);
+            }
+        }
+        by_root
+    }
+
+    /// Queues complete rescans of subtrees whose change history is incomplete, and runs them
+    /// as the rescan budget allows: after a rescan that took `T`, the next one in that root
+    /// waits `T × (100 / monitor.rescan_budget_percent − 1)`. Requests arriving meanwhile are
+    /// merged and run together once due (from here or [`Engine::refresh_deferred`]).
+    ///
+    /// Event history is lost under heavy filesystem load (dropped events, coalesced
+    /// `MustScanSubDirs`), often for a whole root. Without a budget, every loss of a large
+    /// root costs a full scan on every core, back to back for as long as the load lasts.
+    async fn request_rescans(&self, dirs: Vec<PathBuf>) -> Result<()> {
+        for (root, dirs) in self.group_by_root(dirs) {
+            let slot = self.slot(&root);
+            {
+                let mut state = slot.state.write();
+                let wait = state
+                    .rescan_not_before
+                    .and_then(|t| t.checked_duration_since(Instant::now()));
+                if let Some(wait) = wait
+                    && state.pending_rescans.is_empty()
+                {
+                    log::info!(
+                        "deferring rescan of {} subtree(s) in {} by {:.0?} (rescan budget)",
+                        dirs.len(),
+                        root.display(),
+                        wait
+                    );
+                }
+                state.pending_rescans.extend(dirs);
+            }
+            self.run_due_rescans(&slot).await?;
+        }
+        Ok(())
+    }
+
+    /// Runs `slot`'s pending rescans if the rescan budget allows.
+    async fn run_due_rescans(&self, slot: &Arc<RootSlot>) -> Result<()> {
+        let due = |state: &RootState| {
+            !state.pending_rescans.is_empty()
+                && state.rescan_not_before.is_none_or(|t| Instant::now() >= t)
+        };
+        if !due(&slot.state.read()) {
+            return Ok(());
+        }
+        let _op = slot.op.lock().await;
+        let dirs = {
+            let mut state = slot.state.write();
+            if !due(&state) || state.tree.is_none() {
+                return Ok(());
+            }
+            std::mem::take(&mut state.pending_rescans)
+        };
+        // Nested requests are covered by their ancestors.
+        let mut outer: Vec<PathBuf> = Vec::with_capacity(dirs.len());
+        for dir in dirs {
+            if !outer.last().is_some_and(|o| dir.starts_with(o)) {
+                outer.push(dir);
+            }
+        }
+        log::info!(
+            "change history incomplete; rescanning {} subtree(s) in {}: {:?}",
+            outer.len(),
+            slot.root.display(),
+            outer.iter().take(5).collect::<Vec<_>>()
+        );
+        let started = Instant::now();
+        let result = self
+            .refresh_locked(slot, outer, RefreshMode::Deep { expand: false })
+            .await;
+        let percent = u32::from(
+            self.settings()
+                .config()
+                .monitor
+                .rescan_budget_percent
+                .clamp(1, 100),
+        );
+        let cooldown = started.elapsed() * (100 - percent) / percent;
+        slot.state.write().rescan_not_before = Some(Instant::now() + cooldown);
+        result.map(drop)
     }
 
     /// `true` for paths inside bclean's own data, cache, or runtime directories, whose
@@ -972,18 +1073,11 @@ impl Engine {
                 slot.state.write().cursor = Some(bytes.clone());
             }
         }
-        let mode = if batch.must_full_rescan {
-            log::info!(
-                "change history incomplete; rescanning {} subtree(s): {:?}",
-                batch.dirty.len(),
-                batch.dirty.iter().take(5).collect::<Vec<_>>()
-            );
-            RefreshMode::Deep { expand: false }
-        } else {
-            log::debug!("applying change batch: {} dirs", batch.dirty.len());
-            RefreshMode::Shallow
-        };
-        self.apply_dirs(batch.dirty, mode).await
+        if batch.must_full_rescan {
+            return self.request_rescans(batch.dirty).await;
+        }
+        log::debug!("applying change batch: {} dirs", batch.dirty.len());
+        self.apply_dirs(batch.dirty, RefreshMode::Shallow).await
     }
 
     async fn refresh_locked(
@@ -1220,11 +1314,16 @@ impl Engine {
     /// * [`EngineError::Join`] if the executor panics
     pub async fn execute(
         &self,
-        plan: Plan,
+        mut plan: Plan,
         dry_run: bool,
         cancel: CancelToken,
         progress: Option<mpsc::UnboundedSender<ActionProgress>>,
     ) -> Result<ExecutionReport> {
+        for item in &mut plan.items {
+            if item.entries.is_none() {
+                item.entries = self.indexed_entries(&item.path);
+            }
+        }
         let exec = self.inner.exec_lock.lock().await;
         let executor = self.executor(dry_run)?;
         let events = self.inner.events.clone();
@@ -1255,6 +1354,17 @@ impl Engine {
                     index,
                     total,
                     path: item.path.clone(),
+                }),
+                Progress::Advanced {
+                    index,
+                    total,
+                    removed,
+                    entries,
+                } => notify(ActionProgress::ItemAdvanced {
+                    index,
+                    total,
+                    removed,
+                    entries,
                 }),
                 Progress::Finished {
                     index,
@@ -1314,6 +1424,13 @@ impl Engine {
             log::warn!("failed to refresh the index after undo: {e}");
         }
         Ok(record)
+    }
+
+    /// Entries the index holds at `path` (itself included), if it is indexed.
+    fn indexed_entries(&self, path: &Path) -> Option<u64> {
+        let root = self.root_for(path)?;
+        let tree = self.slot(&root).state.read().tree.clone()?;
+        tree.find(path).map(|id| tree.info(id).items)
     }
 
     /// Most recent journal entries, newest first.

@@ -215,6 +215,40 @@ async fn root_level_changes_never_rescan_unchanged_subtrees() {
     assert_eq!((status.full_scans, status.refreshes), (1, 3));
 }
 
+/// Losing change history for a whole root over and over (dropped events under heavy load)
+/// must not turn into back-to-back full scans.
+#[tokio::test(flavor = "multi_thread")]
+async fn lost_history_rescans_are_rate_limited() {
+    let (_dir, root, engine) = setup("[monitor]\nrescan_budget_percent = 1\n").await;
+    engine.scan(&root).await.unwrap();
+    let lost = || bclean_watch::ChangeBatch {
+        dirty: vec![root.clone()],
+        must_full_rescan: true,
+        cursor: None,
+    };
+    let full_scans = || engine.root_statuses()[0].full_scans;
+
+    engine.apply_batch(lost()).await.unwrap();
+    assert_eq!(full_scans(), 2, "the first loss is rescanned right away");
+    for _ in 0..5 {
+        engine.apply_batch(lost()).await.unwrap();
+        engine.refresh_deferred().await.unwrap();
+    }
+    assert_eq!(full_scans(), 2, "later losses wait for the rescan budget");
+
+    // The queued losses run once, together, when the budget allows.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while full_scans() == 2 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        engine.refresh_deferred().await.unwrap();
+    }
+    assert_eq!(full_scans(), 3);
+
+    // Explicit rescans are never limited.
+    engine.rescan(&root, false).await.unwrap();
+    assert_eq!(full_scans(), 4);
+}
+
 /// bclean's own snapshot and database writes must never feed back into the index.
 #[tokio::test(flavor = "multi_thread")]
 async fn own_data_dir_churn_is_ignored() {

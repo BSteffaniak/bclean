@@ -10,8 +10,8 @@ use bmux_keyboard::{KeyCode, KeyStroke, Modifiers};
 
 use crate::listing::tests::{class, file, sample_tree};
 use crate::{
-    ActionOverride, App, BackendEvent, EventReceiver, EventSink, Handled, InMemoryBackend, Lens,
-    Modal, ScanProgress, TuiOptions, View, render_to_text,
+    ActionOverride, App, BackendEvent, EventReceiver, EventSink, ExecutionEvent, Handled,
+    InMemoryBackend, Lens, Modal, ScanProgress, TuiOptions, View, render_to_text,
 };
 
 type TestApp = App<InMemoryBackend>;
@@ -185,6 +185,32 @@ fn mark_plan_execute_report() {
     press(&mut app, &mut rx, &[key(KeyCode::Enter)]);
     assert!(app.modal().is_none());
     assert_eq!(app.listing().len(), 2);
+}
+
+#[test]
+fn execution_shows_progress_inside_a_large_item() {
+    let backend = backend().with_item_delay(std::time::Duration::from_secs(30));
+    let (mut app, mut rx) = setup(backend);
+    // Mark c (500 B) and clean it.
+    press(&mut app, &mut rx, &[key(KeyCode::Space), ch('p'), ch('y')]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !matches!(app.modal(), Some(Modal::Execution(exec)) if exec.current == Some(0)) {
+        assert!(std::time::Instant::now() < deadline, "item never started");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        pump(&mut app, &mut rx);
+    }
+    app.apply(BackendEvent::Execution(ExecutionEvent::ItemProgress {
+        index: 0,
+        removed: 2,
+        entries: Some(4),
+    }));
+    let Some(Modal::Execution(exec)) = app.modal().cloned() else {
+        panic!("expected execution");
+    };
+    assert_eq!(exec.done_estimated_bytes(), 250);
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(text.contains("250 B / 500 B · 0/1 items"), "{text}");
+    assert!(text.contains("2 of 4 entries"), "{text}");
 }
 
 #[test]

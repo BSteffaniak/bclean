@@ -925,11 +925,24 @@ fn render_execution(exec: &ExecState, cx: &mut PaintCx<'_, '_>, full: Rect) {
             lines.push(styled(format!("journal: {journal}"), MUTED));
         }
     } else {
+        let counts = match exec.current_progress {
+            Some((removed, Some(entries))) => format!(
+                " · {} of {} entries",
+                format::count(removed.min(entries)),
+                format::count(entries)
+            ),
+            Some((removed, None)) => format!(" · {} entries removed", format::count(removed)),
+            None => String::new(),
+        };
         let current = exec
             .current
             .and_then(|i| exec.plan.items.get(i))
             .map(|item| {
-                format::truncate_left(&item.path.display().to_string(), width.saturating_sub(4))
+                let path = item.path.display().to_string();
+                format!(
+                    "{}{counts}",
+                    format::truncate_left(&path, width.saturating_sub(4 + counts.chars().count()))
+                )
             })
             .unwrap_or_default();
         lines.push(Line::raw(format!(
@@ -970,14 +983,29 @@ fn render_execution(exec: &ExecState, cx: &mut PaintCx<'_, '_>, full: Rect) {
     }
     paint_text_modal(cx, full, frame, lines, 0);
     let gauge_area = Rect::new(content.x, content.y, content.width, 1);
-    let label = format!("{finished}/{total} items");
-    paint_component(
-        &ProgressBarComponent::new(
-            "exec",
-            ProgressBarValue::determinate(finished as u64, total as u64),
+    // Measured in estimated bytes, so one large item (a `target/` directory) advances the bar
+    // as its entries are removed instead of sitting at 0/1 until it is gone.
+    let total_bytes = exec.plan.estimated_bytes();
+    let (value, label) = if exec.report.is_none() && total_bytes > 0 {
+        let done = exec.done_estimated_bytes().min(total_bytes);
+        (
+            ProgressBarValue::determinate(done, total_bytes),
+            format!(
+                "{} / {} · {finished}/{total} items",
+                format::size(done),
+                format::size(total_bytes)
+            ),
         )
-        .label(&label)
-        .policy(ProgressBarPolicy::compact()),
+    } else {
+        (
+            ProgressBarValue::determinate(finished as u64, total as u64),
+            format!("{finished}/{total} items"),
+        )
+    };
+    paint_component(
+        &ProgressBarComponent::new("exec", value)
+            .label(&label)
+            .policy(ProgressBarPolicy::compact()),
         gauge_area,
         cx,
     );

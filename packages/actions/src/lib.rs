@@ -192,17 +192,22 @@ mod tests {
         std::fs::write(&b, b"log").unwrap();
         let plan = plan_for(&[(&a, ActionSpec::Delete), (&b, ActionSpec::Delete)]);
         let mut events = Vec::new();
+        let mut removed = [0; 2];
         let report = executor(Some(dir.path().join("j/journal.sqlite3")), false).execute(
             &plan,
             &CancelToken::new(),
-            |p| {
-                events.push(match p {
-                    Progress::Started { index, .. } => format!("start {index}"),
-                    Progress::Finished { index, .. } => format!("done {index}"),
-                });
+            |p| match p {
+                Progress::Started { index, .. } => events.push(format!("start {index}")),
+                Progress::Finished { index, .. } => events.push(format!("done {index}")),
+                Progress::Advanced {
+                    index, removed: n, ..
+                } => removed[index] = n,
             },
         );
         assert_eq!(events, ["start 0", "done 0", "start 1", "done 1"]);
+        // Every removed entry is reported: the tree's entries, and the single file.
+        assert!(removed[0] > 1, "{removed:?}");
+        assert_eq!(removed[1], 1);
         assert!(
             report
                 .results

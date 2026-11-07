@@ -325,6 +325,15 @@ pub enum ExecutionEvent {
         /// Index into [`CleanPlan::items`].
         index: usize,
     },
+    /// Progress inside item `index` (a removal reporting entries removed).
+    ItemProgress {
+        /// Index into [`CleanPlan::items`].
+        index: usize,
+        /// Entries removed so far.
+        removed: u64,
+        /// Entries the item is expected to contain, if known.
+        entries: Option<u64>,
+    },
     /// Item `index` finished.
     ItemFinished {
         /// Index into [`CleanPlan::items`].

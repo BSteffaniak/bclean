@@ -89,6 +89,8 @@ pub struct ExecState {
     pub outcomes: Vec<Option<ItemOutcome>>,
     /// Item in progress.
     pub current: Option<usize>,
+    /// Entries removed so far by the item in progress, and how many it holds (if known).
+    pub current_progress: Option<(u64, Option<u64>)>,
     /// Final report.
     pub report: Option<CleanReport>,
     /// Cancellation requested.
@@ -103,6 +105,7 @@ impl ExecState {
             dry_run,
             outcomes,
             current: None,
+            current_progress: None,
             report: None,
             cancel_requested: false,
         }
@@ -114,15 +117,34 @@ impl ExecState {
         self.outcomes.iter().filter(|o| o.is_some()).count()
     }
 
-    /// Estimated bytes of the items completed so far.
+    /// Estimated bytes of the items completed so far, plus the share of the item in progress
+    /// already removed (by entry count).
     #[must_use]
     pub fn done_estimated_bytes(&self) -> u64 {
-        self.outcomes
+        let finished = self
+            .outcomes
             .iter()
             .zip(&self.plan.items)
             .filter(|(o, _)| matches!(o, Some(ItemOutcome::Done { .. })))
             .map(|(_, item)| item.estimated_bytes)
-            .fold(0, u64::saturating_add)
+            .fold(0, u64::saturating_add);
+        finished.saturating_add(self.current_estimated_bytes())
+    }
+
+    /// Estimated bytes already removed by the item in progress.
+    fn current_estimated_bytes(&self) -> u64 {
+        let (Some(index), Some((removed, Some(entries)))) = (self.current, self.current_progress)
+        else {
+            return 0;
+        };
+        let Some(item) = self.plan.items.get(index) else {
+            return 0;
+        };
+        let removed = removed.min(entries);
+        u64::try_from(
+            u128::from(item.estimated_bytes) * u128::from(removed) / u128::from(entries.max(1)),
+        )
+        .unwrap_or(u64::MAX)
     }
 }
 
@@ -514,7 +536,19 @@ impl<B: Backend> App<B> {
         };
         match event {
             ExecutionEvent::Started { .. } => {}
-            ExecutionEvent::ItemStarted { index } => exec.current = Some(index),
+            ExecutionEvent::ItemStarted { index } => {
+                exec.current = Some(index);
+                exec.current_progress = None;
+            }
+            ExecutionEvent::ItemProgress {
+                index,
+                removed,
+                entries,
+            } => {
+                if exec.current == Some(index) {
+                    exec.current_progress = Some((removed, entries));
+                }
+            }
             ExecutionEvent::ItemFinished { index, outcome } => {
                 let done = matches!(outcome, ItemOutcome::Done { .. }) && !exec.dry_run;
                 let path = exec.plan.items.get(index).map(|item| item.path.clone());
@@ -523,6 +557,7 @@ impl<B: Backend> App<B> {
                 }
                 if exec.current == Some(index) {
                     exec.current = None;
+                    exec.current_progress = None;
                 }
                 if done && let Some(path) = path {
                     self.remove_path_locally(&path);
@@ -530,6 +565,7 @@ impl<B: Backend> App<B> {
             }
             ExecutionEvent::Finished(report) => {
                 exec.current = None;
+                exec.current_progress = None;
                 exec.report = Some(report);
             }
         }
