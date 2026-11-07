@@ -112,7 +112,10 @@ pub async fn fetch(client: &mut Client) -> Result<Snapshot, ClientError> {
     let alerts = alerts(client).await?;
     // Older daemons don't know the request; the segment simply omits the amount.
     let reclaimable = match client
-        .request(Request::Dashboard { roots: Vec::new() })
+        .request(Request::Dashboard {
+            roots: Vec::new(),
+            one_filesystem: false,
+        })
         .await
     {
         Ok(Response::Dashboard(summary)) => Some(Reclaimable {

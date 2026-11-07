@@ -1,6 +1,8 @@
 //! Backend-neutral representation of one directory listing.
 
 use std::ffi::OsStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bclean_tree::{EntryKind, NodeFlags};
 
@@ -56,6 +58,9 @@ impl RawEntry {
     }
 }
 
+/// Entries between two live progress reports of one listing.
+const LIVE_CHUNK: u64 = 4096;
+
 /// All entries of one directory with their names interned in a single buffer.
 #[derive(Debug, Default)]
 pub struct Listing {
@@ -63,13 +68,41 @@ pub struct Listing {
     pub names: Vec<u8>,
     /// Entries in enumeration order.
     pub entries: Vec<RawEntry>,
+    /// Counter that [`Listing::push`] adds to every [`LIVE_CHUNK`] entries while a large
+    /// directory is being read, until [`Listing::settle`] takes the additions back.
+    live: Option<Arc<AtomicU64>>,
+    /// Entries added to `live` and not yet taken back.
+    reported: u64,
 }
 
 impl Listing {
     /// Clears the listing, keeping capacity.
     pub fn clear(&mut self) {
+        self.settle();
         self.names.clear();
         self.entries.clear();
+    }
+
+    /// Reports entries to `counter` while they are pushed (see [`Listing::settle`]).
+    pub fn report_to(&mut self, counter: &Arc<AtomicU64>) {
+        if self
+            .live
+            .as_ref()
+            .is_none_or(|live| !Arc::ptr_eq(live, counter))
+        {
+            self.settle();
+            self.live = Some(Arc::clone(counter));
+        }
+    }
+
+    /// Takes back the entries reported while pushing (call once the listing is counted).
+    pub fn settle(&mut self) {
+        if self.reported > 0
+            && let Some(live) = &self.live
+        {
+            live.fetch_sub(self.reported, Ordering::Relaxed);
+        }
+        self.reported = 0;
     }
 
     /// Appends `entry` with the given OS-encoded name bytes.
@@ -78,6 +111,12 @@ impl Listing {
         entry.name_len = u32::try_from(name.len()).unwrap_or(u32::MAX);
         self.names.extend_from_slice(name);
         self.entries.push(entry);
+        if (self.entries.len() as u64).is_multiple_of(LIVE_CHUNK)
+            && let Some(live) = &self.live
+        {
+            live.fetch_add(LIVE_CHUNK, Ordering::Relaxed);
+            self.reported += LIVE_CHUNK;
+        }
     }
 
     /// Name bytes of `entry`.
@@ -104,4 +143,24 @@ pub fn os_str(bytes: &[u8]) -> &OsStr {
     // SAFETY: every name stored in a `Listing` comes from `OsStr::as_encoded_bytes` of a
     // complete `OsStr` produced on this platform in this process, so it is valid encoded data.
     unsafe { OsStr::from_encoded_bytes_unchecked(bytes) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_listings_report_live_progress_until_settled() {
+        let live = Arc::new(AtomicU64::new(0));
+        let mut listing = Listing::default();
+        listing.report_to(&live);
+        for _ in 0..(LIVE_CHUNK * 2 + 10) {
+            listing.push(b"f", RawEntry::new(EntryKind::File));
+        }
+        assert_eq!(live.load(Ordering::Relaxed), LIVE_CHUNK * 2);
+        listing.settle();
+        assert_eq!(live.load(Ordering::Relaxed), 0);
+        listing.clear();
+        assert_eq!(live.load(Ordering::Relaxed), 0);
+    }
 }

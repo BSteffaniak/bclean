@@ -25,6 +25,7 @@
 mod dashboard;
 mod refresh;
 mod select;
+mod volumes;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -49,7 +50,7 @@ use bclean_protocol::{
 use bclean_rules::{Explanation, RuleError, RuleSet};
 use bclean_scan::{ProgressSnapshot, ScanBackend, ScanError, ScanOptions, ScanProgress};
 use bclean_staleness::unix_now;
-use bclean_tree::{NodeId, SizeMode, Tree};
+use bclean_tree::{NodeFlags, NodeId, SizeMode, Tree};
 use bclean_watch::{ChangeBatch, VolumeError, WatchConfig, WatchCursor};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,24 @@ use tokio::sync::{broadcast, mpsc};
 
 pub use refresh::{Refresh, RefreshMode, RulesOracle};
 pub use select::{Selection, SortOrder, sort_items};
+pub use volumes::volume_roots;
+
+/// Roots added and removed by [`Engine::refresh_volume_roots`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RootChanges {
+    /// Roots that appeared.
+    pub added: Vec<PathBuf>,
+    /// Roots that disappeared.
+    pub removed: Vec<PathBuf>,
+}
+
+impl RootChanges {
+    /// Nothing changed.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
 
 /// Lookback used when prefetching volume samples for policy evaluation.
 const VOLUME_LOOKBACK_SECS: i64 = 30 * 86_400;
@@ -147,6 +166,9 @@ pub struct EngineOptions {
     pub load: LoadOptions,
     /// Override of the data directory (snapshots, history, journal).
     pub data_dir: Option<PathBuf>,
+    /// Never index drives other than `monitor.index_roots` (`-x`), whatever
+    /// `monitor.index_volumes` says.
+    pub one_filesystem: bool,
 }
 
 impl EngineOptions {
@@ -159,6 +181,7 @@ impl EngineOptions {
         Ok(Self {
             load: LoadOptions::from_process()?.with_explicit(config),
             data_dir: None,
+            one_filesystem: false,
         })
     }
 }
@@ -355,6 +378,10 @@ struct Inner {
     exec_lock: tokio::sync::Mutex<()>,
     /// Dashboard volume trends, keyed by mount point.
     volume_trends: Mutex<BTreeMap<String, dashboard::VolumeTrend>>,
+    /// Drives indexed besides `monitor.index_roots` (see [`Engine::refresh_volume_roots`]).
+    volume_roots: Mutex<Vec<PathBuf>>,
+    /// [`EngineOptions::one_filesystem`].
+    one_filesystem: bool,
 }
 
 /// The shared bclean engine. Cheap to clone (all state is behind an `Arc`).
@@ -421,6 +448,8 @@ impl Engine {
                 started_at: unix_now(),
                 watchers: Mutex::new(Vec::new()),
                 volume_trends: Mutex::new(BTreeMap::new()),
+                volume_roots: Mutex::new(Vec::new()),
+                one_filesystem: options.one_filesystem,
                 exec_lock: tokio::sync::Mutex::new(()),
             }),
         })
@@ -534,10 +563,72 @@ impl Engine {
             .cloned()
     }
 
-    /// `monitor.index_roots`, expanded and made absolute (missing directories are skipped).
+    /// The loaded root whose tree covers `path`: the deepest root containing it, unless `path`
+    /// is on another filesystem mounted inside that root, which the root's scan did not enter.
+    fn covering_root(&self, path: &Path) -> Option<PathBuf> {
+        let root = self.root_for(path)?;
+        if root == path {
+            return Some(root);
+        }
+        let Some(tree) = self.tree(&root) else {
+            return Some(root);
+        };
+        let other_fs = tree
+            .find_nearest(path)
+            .is_some_and(|(id, _)| tree.flags(id).contains(NodeFlags::OTHER_FS));
+        (!other_fs).then_some(root)
+    }
+
+    /// `monitor.index_roots`, expanded and made absolute (missing directories are skipped),
+    /// plus the drives found by the last [`Engine::refresh_volume_roots`].
     #[must_use]
     pub fn index_roots(&self) -> Vec<PathBuf> {
-        self.settings().index_roots()
+        let mut roots = self.settings().index_roots();
+        roots.extend(self.inner.volume_roots.lock().iter().cloned());
+        roots.sort();
+        roots.dedup();
+        roots
+    }
+
+    /// Re-detects the drives to index (`monitor.index_volumes`, `monitor.exclude_volumes`) and
+    /// returns the drive roots that appeared and disappeared since the last call.
+    ///
+    /// # Errors
+    ///
+    /// * [`EngineError::Volume`] if the mount table cannot be read
+    /// * [`EngineError::Invalid`] if an exclude pattern is invalid
+    pub async fn refresh_volume_roots(&self) -> Result<RootChanges> {
+        let settings = self.settings();
+        let one_filesystem = self.inner.one_filesystem;
+        let found =
+            tokio::task::spawn_blocking(move || volume_roots(&settings, one_filesystem)).await??;
+        let current = std::mem::replace(&mut *self.inner.volume_roots.lock(), found.clone());
+        Ok(RootChanges {
+            added: found
+                .iter()
+                .filter(|r| !current.contains(r))
+                .cloned()
+                .collect(),
+            removed: current.into_iter().filter(|r| !found.contains(r)).collect(),
+        })
+    }
+
+    /// Saves `root`'s unsaved changes and drops it from memory (for example when its drive is
+    /// unmounted). Its snapshot stays on disk for when it comes back.
+    ///
+    /// # Errors
+    ///
+    /// * [`EngineError::Store`] if the snapshot cannot be written
+    pub async fn unload_root(&self, root: &Path) -> Result<()> {
+        let Some(slot) = self.inner.roots.lock().get(root).cloned() else {
+            return Ok(());
+        };
+        let _op = slot.op.lock().await;
+        if slot.state.read().unsaved_since.is_some() {
+            self.persist(&slot).await?;
+        }
+        self.inner.roots.lock().remove(root);
+        Ok(())
     }
 
     /// The loaded tree for `root`.
@@ -842,15 +933,15 @@ impl Engine {
     /// Makes sure `path` is covered by a loaded tree and returns its root's snapshot.
     ///
     /// * Inside a loaded root: reuses it (with `force`, rescans `path` and grafts it).
-    /// * Otherwise `path` becomes a root: its persisted snapshot is loaded unless `force`,
-    ///   else it is scanned.
+    /// * Otherwise (including a drive mounted inside a loaded root) `path` becomes a root: its
+    ///   persisted snapshot is loaded unless `force`, else it is scanned.
     ///
     /// # Errors
     ///
     /// * Same as [`Engine::scan`] and [`Engine::load_snapshot`]
     pub async fn ensure_scanned(&self, path: &Path, force: bool) -> Result<SnapshotRef> {
         let path = absolute(path)?;
-        let root = self.root_for(&path).unwrap_or_else(|| path.clone());
+        let root = self.covering_root(&path).unwrap_or_else(|| path.clone());
         let slot = self.slot(&root);
         let has_tree = slot.state.read().tree.is_some();
         if has_tree && force && root != path {
@@ -1239,6 +1330,7 @@ impl Engine {
     #[must_use]
     pub fn watch_config(&self, roots: &[PathBuf]) -> WatchConfig {
         let mut config = WatchConfig::new(roots.to_vec());
+        config.max_watches = self.settings().config().monitor.max_watches;
         let mut oldest: Option<(u64, WatchCursor)> = None;
         for root in roots {
             let Some(slot) = self.inner.roots.lock().get(root).cloned() else {

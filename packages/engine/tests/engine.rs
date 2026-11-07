@@ -27,6 +27,7 @@ async fn setup(config: &str) -> (tempfile::TempDir, PathBuf, Engine) {
     let engine = Engine::open(EngineOptions {
         load: LoadOptions::new(root.clone(), expander),
         data_dir: Some(home.join("data")),
+        one_filesystem: true,
     })
     .await
     .unwrap();
@@ -294,7 +295,10 @@ async fn expand_updates_every_root_containing_the_path() {
 async fn dashboard_summarizes_reclaimable_data() {
     let (_dir, root, engine) = setup("").await;
     engine.scan(&root).await.unwrap();
-    let summary = engine.dashboard(std::slice::from_ref(&root)).await.unwrap();
+    let summary = engine
+        .dashboard(std::slice::from_ref(&root), false)
+        .await
+        .unwrap();
 
     assert_eq!(summary.roots.len(), 1);
     assert_eq!(summary.roots[0].path, root);
@@ -350,6 +354,7 @@ async fn own_data_dir_churn_is_ignored() {
     let engine = Engine::open(EngineOptions {
         load: LoadOptions::new(root.clone(), expander),
         data_dir: Some(root.join("data")),
+        one_filesystem: true,
     })
     .await
     .unwrap();

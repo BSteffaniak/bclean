@@ -31,6 +31,7 @@ bclean rules list                 # effective rules (139 built-ins + yours)
 bclean daemon start|stop|status|logs
 bclean service install            # keep the daemon running at login
 bclean --no-daemon ...            # do everything in-process
+bclean -x ...                     # stay on one filesystem (no other drives), like ncdu -x
 ```
 
 ## Configuration
@@ -60,6 +61,26 @@ kind = "DESKTOP"
 
 `bclean config show` prints the merged result. `[tui] start_view = "BROWSER"` makes plain
 `bclean` open the browser instead of the dashboard.
+
+### Drives
+
+Besides `monitor.index_roots` (default `~`), the daemon indexes every other mounted drive
+(internal disks, USB and external drives) as a root of its own, picking drives up as they are
+mounted and unloading them when they go away (their index is kept for when they return).
+Network, RAM-backed, and read-only filesystems, boot/EFI partitions, volumes under 1 GiB, and
+the volume holding an index root (`/` when `~` is indexed) are skipped. In the browser, a
+mount point (`(drive ↵)`) opens its drive; going up from the drive's top returns.
+
+```toml
+[monitor]
+index_volumes = true              # false: only index_roots
+exclude_volumes = ["/mnt/backup", "/run/media/*/CAMERA"]
+max_watches = 0                   # Linux inotify watch cap; 0 = 40% of the per-user limit
+```
+
+`-x` / `--one-file-system` turns drive indexing off for engines the command runs
+(`--no-daemon`, `daemon start/restart/run`, `service install`, `watch`) and keeps the dashboard
+and browser on the browsed path's filesystem.
 
 ## Dashboard
 

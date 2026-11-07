@@ -89,23 +89,33 @@ impl Engine {
     /// Computes the dashboard summary over the index roots (`monitor.index_roots`) plus
     /// `extra_roots` (for example the root a client is browsing), counting each path once:
     /// a path inside nested roots is taken from the deepest one. Only loaded roots are
-    /// included; nothing is scanned.
+    /// included; nothing is scanned. With `one_filesystem`, only roots and volumes on the
+    /// filesystems of `extra_roots` are included (`-x`).
     ///
     /// # Errors
     ///
     /// * [`crate::EngineError::Volume`] if volumes cannot be listed
     /// * [`crate::EngineError::History`] / [`crate::EngineError::Journal`] if history or the
     ///   journal cannot be read
-    pub async fn dashboard(&self, extra_roots: &[PathBuf]) -> Result<DashboardSummary> {
+    pub async fn dashboard(
+        &self,
+        extra_roots: &[PathBuf],
+        one_filesystem: bool,
+    ) -> Result<DashboardSummary> {
         let now = unix_now();
         let mut wanted: BTreeSet<PathBuf> = self.index_roots().into_iter().collect();
-        for root in extra_roots {
-            if let Ok(root) = std::path::absolute(root)
-                && let Some(loaded) = self.root_for(&root)
-            {
+        let extra: Vec<PathBuf> = extra_roots
+            .iter()
+            .filter_map(|root| std::path::absolute(root).ok())
+            .collect();
+        for root in &extra {
+            if let Some(loaded) = self.root_for(root) {
                 wanted.insert(loaded);
             }
         }
+        let in_scope =
+            |path: &Path| !one_filesystem || extra.iter().any(|e| same_filesystem(e, path));
+        wanted.retain(|root| in_scope(root));
         let scope = self.scoped_roots(&wanted);
 
         let mut summary = DashboardSummary {
@@ -117,7 +127,10 @@ impl Engine {
         summarize_items(&mut summary, &items, &safe, &scope);
 
         let volumes = self.volumes().await.unwrap_or_default();
-        for stats in volumes {
+        for stats in volumes
+            .into_iter()
+            .filter(|v| in_scope(Path::new(&v.mount_point)))
+        {
             let trend = self.volume_trend(&stats, now).await;
             summary
                 .volumes
@@ -586,6 +599,14 @@ fn device_of(path: &Path) -> Option<u64> {
 #[cfg(not(unix))]
 const fn device_of(_path: &Path) -> Option<u64> {
     None
+}
+
+/// `a` and `b` are on one filesystem (by device; by drive prefix where devices are unknown).
+fn same_filesystem(a: &Path, b: &Path) -> bool {
+    match (device_of(a), device_of(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.components().next() == b.components().next(),
+    }
 }
 
 /// Resamples `(at, used)` points to at most [`TREND_POINTS`] evenly spaced values ending

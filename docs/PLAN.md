@@ -57,7 +57,9 @@ alarms, and can auto-clean).
    nodes) via the `PruneOracle` trait; expanded lazily on demand. The daemon answers an expand
    with just that subtree (in its own file) as soon as it is scanned, before saving the root;
    outer roots containing it (`/` around `~`) catch up in the background.
-4. Streaming progress so the UI is usable mid-scan.
+4. Streaming progress so the UI is usable mid-scan, including inside single directories with
+   millions of entries (counted every 4096 entries while they are listed). The Nix store's
+   hard-link directory `/nix/store/.links` is excluded by default.
 5. Benchmarks vs ncdu/gdu/dua (`scripts/bench.sh`).
 
 ## Index & incremental updates
@@ -65,6 +67,18 @@ alarms, and can auto-clean).
 - Snapshot of `TreeParts` on disk; SQLite for history rollups and the action journal.
 - macOS FSEvents and Windows USN journal replay changes since the last event id, even after
   downtime. Linux uses fanotify when privileged, else inotify + periodic dirty rescans.
+- inotify needs one watch per directory and its per-user limit is shared with every other
+  program, so directories are watched one by one from a background thread (never blocking
+  scans): breadth first, never following symlinks or crossing filesystems, skipping
+  directories it cannot watch, and stopping at `monitor.max_watches` (default 40% of
+  `fs.inotify.max_user_watches`). Subtrees left over are reported for budgeted rescans every
+  5 minutes and watched later if the budget frees up; new directories are watched as they
+  appear.
+- Other drives are roots of their own (`monitor.index_volumes`, `monitor.exclude_volumes`,
+  `-x`): the daemon re-detects them on every volume poll, scans new ones (configured roots
+  first), unloads removed ones (keeping their snapshots), and restarts the change source on the
+  new set of roots. A scan never crosses into another filesystem; the mount point stays a leaf
+  that the browser opens as that drive's root.
 - Change events name directories whose *own entries* changed. Each is reconciled shallowly:
   re-list that one directory, update changed entries, drop removed ones, and scan only new
   subdirectories. Unchanged subtrees are never read, so a dotfile saved in `~` costs one

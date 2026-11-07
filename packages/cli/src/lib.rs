@@ -89,7 +89,7 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 /// * Any command failure
 #[allow(clippy::too_many_lines)] // one flat dispatch table reads best
 pub fn execute(cli: Cli) -> anyhow::Result<bool> {
-    let ctx = Ctx::load(cli.config.clone(), cli.no_daemon)?;
+    let ctx = Ctx::load(cli.config.clone(), cli.no_daemon, cli.one_file_system)?;
     if matches!(
         cli.command,
         Some(Command::Daemon {
@@ -225,9 +225,10 @@ fn start_location(
     if path.is_some() {
         return Ok((target, dashboard, None));
     }
-    let root = ctx
-        .settings
-        .index_roots()
+    let mut roots = ctx.settings.index_roots();
+    roots
+        .extend(bclean_engine::volume_roots(&ctx.settings, ctx.one_filesystem).unwrap_or_default());
+    let root = roots
         .into_iter()
         .filter(|root| target.starts_with(root))
         .max_by_key(|root| root.components().count());
@@ -243,11 +244,13 @@ fn browse(ctx: &Ctx, rt: &tokio::runtime::Runtime, path: Option<&Path>) -> anyho
     let options = bclean_tui::TuiOptions {
         start_on_dashboard,
         initial_path,
+        one_filesystem: ctx.one_filesystem,
         ..tui_options(ctx, &root)
     };
     let exit = if ctx.no_daemon {
         let engine = rt.block_on(ctx.engine())?;
-        let backend = tui_backend::LocalBackend::new(engine, rt.handle().clone(), root);
+        let backend = tui_backend::LocalBackend::new(engine, rt.handle().clone(), root)
+            .with_one_filesystem(ctx.one_filesystem);
         bclean_tui::run(backend, options)?
     } else {
         // Make sure the daemon is up (autostart) before entering the terminal UI.
@@ -258,7 +261,8 @@ fn browse(ctx: &Ctx, rt: &tokio::runtime::Runtime, path: Option<&Path>) -> anyho
             ctx.dirs.data.clone(),
             rt.handle().clone(),
             root,
-        );
+        )
+        .with_one_filesystem(ctx.one_filesystem);
         bclean_tui::run(backend, options)?
     };
     if !exit.marked.is_empty() {

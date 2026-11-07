@@ -680,7 +680,10 @@ pub async fn status(ctx: &Ctx, format: Format) -> anyhow::Result<()> {
         other => return Err(unexpected(&other)),
     };
     let dashboard = match conn
-        .request(Request::Dashboard { roots: Vec::new() })
+        .request(Request::Dashboard {
+            roots: Vec::new(),
+            one_filesystem: false,
+        })
         .await?
     {
         Response::Dashboard(summary) => summary,

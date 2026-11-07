@@ -308,6 +308,68 @@ fn expands_summarized_directories() {
     );
 }
 
+/// A tree with another drive mounted at `/r/usb`, plus that drive's own tree.
+fn drive_backend() -> InMemoryBackend {
+    let mut tree = sample_tree();
+    tree.add_child(
+        NodeId::ROOT,
+        OsStr::new("usb"),
+        EntryMeta::new(EntryKind::Dir, 0, 0, 0).with_flags(NodeFlags::OTHER_FS),
+    );
+    let mut usb = Tree::new("/r/usb", EntryMeta::dir());
+    usb.add_child_raw(NodeId::ROOT, OsStr::new("photos"), file(5_000, 1));
+    usb.add_child_raw(NodeId::ROOT, OsStr::new("music"), file(3_000, 1));
+    usb.recompute_aggregates();
+    InMemoryBackend::new(tree).with_root(usb)
+}
+
+fn select(app: &mut TestApp, rx: &mut EventReceiver, name: &str) {
+    press(app, rx, &[ch('g')]);
+    for _ in 0..app.listing().len() {
+        if selected_name(app) == name {
+            return;
+        }
+        press(app, rx, &[ch('j')]);
+    }
+    panic!("{name} not listed");
+}
+
+#[test]
+fn mount_points_open_their_drive_and_go_back() {
+    let (mut app, mut rx) = setup(drive_backend());
+    select(&mut app, &mut rx, "usb");
+    press(&mut app, &mut rx, &[key(KeyCode::Enter)]);
+    assert!(app.backend().log.iter().any(|l| l == "open root /r/usb"));
+    let tree = app.tree().unwrap();
+    assert_eq!(tree.root_path(), Path::new("/r/usb"));
+    assert_eq!(app.cwd(), NodeId::ROOT);
+    assert_eq!(app.listing().len(), 2);
+    // Up from the drive's top returns to the parent tree with the mount point selected.
+    press(&mut app, &mut rx, &[key(KeyCode::Left)]);
+    assert_eq!(app.tree().unwrap().root_path(), Path::new("/r"));
+    assert_eq!(app.cwd(), NodeId::ROOT);
+    assert_eq!(selected_name(&mut app), "usb");
+    // Further up stays put.
+    press(&mut app, &mut rx, &[key(KeyCode::Left)]);
+    assert_eq!(app.tree().unwrap().root_path(), Path::new("/r"));
+}
+
+#[test]
+fn one_filesystem_keeps_mount_points_closed() {
+    let (sink, mut rx) = EventSink::channel();
+    let options = TuiOptions {
+        one_filesystem: true,
+        ..TuiOptions::default()
+    };
+    let mut app = App::new(drive_backend(), options, sink);
+    app.viewport_rows = 10;
+    pump(&mut app, &mut rx);
+    select(&mut app, &mut rx, "usb");
+    press(&mut app, &mut rx, &[key(KeyCode::Enter)]);
+    assert!(!app.backend().log.iter().any(|l| l.starts_with("open root")));
+    assert_eq!(app.tree().unwrap().root_path(), Path::new("/r"));
+}
+
 /// The daemon backend reports a finished expansion only by publishing the updated tree.
 #[test]
 fn expansion_completes_from_a_tree_update() {

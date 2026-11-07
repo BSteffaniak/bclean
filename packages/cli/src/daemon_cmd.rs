@@ -44,7 +44,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
 ///
 /// * If the daemon cannot be started
 pub async fn start(ctx: &Ctx) -> anyhow::Result<()> {
-    let mut options = ctx.client_options();
+    let mut options = ctx.daemon_options();
     options.autostart = true;
     let client = Client::connect(&options).await?;
     println!(

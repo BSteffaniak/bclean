@@ -33,6 +33,7 @@ fn local_backend_renders_tree_and_classifications() {
                 Expander::new(Some(home.clone()), BTreeMap::new()),
             ),
             data_dir: Some(home.join("data")),
+            one_filesystem: true,
         }))
         .unwrap();
     let backend = LocalBackend::new(engine, rt.handle().clone(), root.clone());

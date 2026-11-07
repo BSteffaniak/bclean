@@ -16,6 +16,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_daemon: bool,
 
+    /// Stay on one filesystem: don't index other drives (`monitor.index_volumes`) in engines
+    /// this command runs (`--no-daemon`, `daemon start/restart/run`, `service install`,
+    /// `watch`), and keep the dashboard to the browsed path's filesystem.
+    #[arg(short = 'x', long = "one-file-system", global = true)]
+    pub one_file_system: bool,
+
     /// Increase log verbosity (-v, -vv).
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,

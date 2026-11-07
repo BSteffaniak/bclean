@@ -390,6 +390,7 @@ dependencies = [
  "bclean_staleness",
  "bclean_tree",
  "bclean_watch",
+ "globset",
  "log",
  "parking_lot 0.13.0",
  "serde",

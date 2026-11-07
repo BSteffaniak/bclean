@@ -23,6 +23,7 @@ bclean_scan = { workspace = true }
 bclean_staleness = { workspace = true }
 bclean_tree = { workspace = true }
 bclean_watch = { workspace = true }
+globset = { workspace = true }
 log = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }

@@ -202,10 +202,12 @@ pub fn extract_subtree(tree: &Tree, node: NodeId) -> Tree {
 pub struct LocalBackend {
     engine: Engine,
     handle: Handle,
-    root: PathBuf,
+    /// The browsed root (changed by [`Backend::open_root`]).
+    root: Arc<Mutex<PathBuf>>,
     sink: Option<EventSink>,
     plans: Arc<Mutex<Plans>>,
     dashboard: Arc<tokio::sync::Notify>,
+    one_filesystem: bool,
 }
 
 impl LocalBackend {
@@ -215,11 +217,19 @@ impl LocalBackend {
         Self {
             engine,
             handle,
-            root,
+            root: Arc::new(Mutex::new(root)),
             sink: None,
             plans: Arc::new(Mutex::new(Plans::default())),
             dashboard: Arc::new(tokio::sync::Notify::new()),
+            one_filesystem: false,
         }
+    }
+
+    /// Keeps the dashboard to the browsed root's filesystem (`-x`).
+    #[must_use]
+    pub const fn with_one_filesystem(mut self, one_filesystem: bool) -> Self {
+        self.one_filesystem = one_filesystem;
+        self
     }
 
     fn sink(&self) -> EventSink {
@@ -229,16 +239,18 @@ impl LocalBackend {
     /// Starts the dashboard refresher: summaries over the index roots plus the browsed root,
     /// re-computed when [`Self::dashboard`] is nudged.
     fn spawn_dashboard(&self, sink: &EventSink) {
-        let (engine, root) = (self.engine.clone(), self.root.clone());
+        let (engine, root) = (self.engine.clone(), Arc::clone(&self.root));
+        let one_filesystem = self.one_filesystem;
         let fetch_sink = sink.clone();
         spawn_dashboard_refresher(
             &self.handle,
             Arc::clone(&self.dashboard),
             sink.clone(),
             move || {
-                let (engine, sink, root) = (engine.clone(), fetch_sink.clone(), root.clone());
+                let (engine, sink, root) =
+                    (engine.clone(), fetch_sink.clone(), root.lock().clone());
                 async move {
-                    match engine.dashboard(&[root]).await {
+                    match engine.dashboard(&[root], one_filesystem).await {
                         Ok(summary) => sink.send(BackendEvent::Dashboard(Box::new(summary))),
                         Err(e) => sink.send(BackendEvent::Error(format!("dashboard: {e}"))),
                     };
@@ -265,12 +277,12 @@ impl Backend for LocalBackend {
     fn start(&mut self, sink: EventSink) {
         self.sink = Some(sink.clone());
         let engine = self.engine.clone();
-        let root = self.root.clone();
+        let root = self.root.lock().clone();
         let mut events = engine.subscribe();
         let started = Instant::now();
         let listener_sink = sink.clone();
         let listener_engine = engine.clone();
-        let listener_root = root.clone();
+        let listener_root = Arc::clone(&self.root);
         let dashboard = Arc::clone(&self.dashboard);
         self.spawn_dashboard(&sink);
         self.handle.spawn(async move {
@@ -284,14 +296,15 @@ impl Backend for LocalBackend {
                 ) {
                     dashboard.notify_one();
                 }
+                let current = listener_root.lock().clone();
                 match event {
-                    Event::ScanProgress { root, progress } if root == listener_root => {
+                    Event::ScanProgress { root, progress } if root == current => {
                         listener_sink.send(BackendEvent::Progress(scan_progress(
                             &root, progress, started,
                         )));
                     }
-                    Event::TreeUpdated(s) if s.root == listener_root => {
-                        send_tree(&listener_engine, &listener_sink, &listener_root);
+                    Event::TreeUpdated(s) if s.root == current => {
+                        send_tree(&listener_engine, &listener_sink, &current);
                     }
                     _ => {}
                 }
@@ -329,7 +342,7 @@ impl Backend for LocalBackend {
     fn rescan(&mut self, path: PathBuf) {
         let engine = self.engine.clone();
         let sink = self.sink();
-        let root = self.root.clone();
+        let root = self.root.lock().clone();
         self.handle.spawn(async move {
             let result = if path == root {
                 engine.scan(&root).await.map(drop)
@@ -341,6 +354,23 @@ impl Backend for LocalBackend {
                     "rescan of {} failed: {e}",
                     path.display()
                 )));
+            }
+        });
+    }
+
+    fn open_root(&mut self, path: PathBuf) {
+        path.clone_into(&mut self.root.lock());
+        let engine = self.engine.clone();
+        let sink = self.sink();
+        self.handle.spawn(async move {
+            match engine.ensure_scanned(&path, false).await {
+                Ok(_) => send_tree(&engine, &sink, &path),
+                Err(e) => {
+                    sink.send(BackendEvent::Error(format!(
+                        "cannot open {}: {e}",
+                        path.display()
+                    )));
+                }
             }
         });
     }
@@ -481,6 +511,8 @@ fn remap_index(event: &mut ExecutionEvent, index_of: &[usize]) {
 
 #[derive(Debug, Default)]
 struct DaemonShared {
+    /// The browsed path (changed by [`Backend::open_root`]).
+    path: PathBuf,
     /// Root of the daemon tree containing the browse path.
     tree_root: Option<PathBuf>,
     /// Index remapping of the running execution (plan index -> UI index), if any.
@@ -493,11 +525,11 @@ pub struct DaemonBackend {
     settings: Arc<Settings>,
     data_dir: PathBuf,
     handle: Handle,
-    path: PathBuf,
     sink: Option<EventSink>,
     plans: Arc<Mutex<Plans>>,
     shared: Arc<Mutex<DaemonShared>>,
     dashboard: Arc<tokio::sync::Notify>,
+    one_filesystem: bool,
 }
 
 impl DaemonBackend {
@@ -515,12 +547,22 @@ impl DaemonBackend {
             settings,
             data_dir,
             handle,
-            path,
             sink: None,
             plans: Arc::new(Mutex::new(Plans::default())),
-            shared: Arc::new(Mutex::new(DaemonShared::default())),
+            shared: Arc::new(Mutex::new(DaemonShared {
+                path,
+                ..DaemonShared::default()
+            })),
             dashboard: Arc::new(tokio::sync::Notify::new()),
+            one_filesystem: false,
         }
+    }
+
+    /// Keeps the dashboard to the browsed path's filesystem (`-x`).
+    #[must_use]
+    pub const fn with_one_filesystem(mut self, one_filesystem: bool) -> Self {
+        self.one_filesystem = one_filesystem;
+        self
     }
 
     fn sink(&self) -> EventSink {
@@ -530,19 +572,24 @@ impl DaemonBackend {
     /// Starts the dashboard refresher: summaries over the daemon's index roots plus the
     /// browsed path, re-fetched when [`Self::dashboard`] is nudged.
     fn spawn_dashboard(&self, sink: &EventSink) {
-        let (options, path) = (self.options.clone(), self.path.clone());
+        let (options, shared) = (self.options.clone(), Arc::clone(&self.shared));
+        let one_filesystem = self.one_filesystem;
         let fetch_sink = sink.clone();
         spawn_dashboard_refresher(
             &self.handle,
             Arc::clone(&self.dashboard),
             sink.clone(),
             move || {
-                let (options, sink, path) = (options.clone(), fetch_sink.clone(), path.clone());
+                let (options, sink) = (options.clone(), fetch_sink.clone());
+                let path = shared.lock().path.clone();
                 async move {
                     let summary = async {
                         let mut client = Client::connect(&options).await?;
                         match client
-                            .request(Request::Dashboard { roots: vec![path] })
+                            .request(Request::Dashboard {
+                                roots: vec![path],
+                                one_filesystem,
+                            })
                             .await?
                         {
                             Response::Dashboard(summary) => Ok(summary),
@@ -559,6 +606,35 @@ impl DaemonBackend {
     }
 
     /// Runs `f` with a fresh client connection on the runtime, reporting errors to the UI.
+    /// Loads the tree of the browsed path (scanning it first if the daemon has not indexed it)
+    /// and sends it to the UI.
+    fn load_tree(&self, what: &'static str) {
+        let shared = Arc::clone(&self.shared);
+        let path = shared.lock().path.clone();
+        self.with_client(what, move |mut client, sink| async move {
+            let snapshot = match client
+                .request(Request::Scan {
+                    root: path.clone(),
+                    force: false,
+                    wait: true,
+                })
+                .await?
+            {
+                Response::Snapshot(s) => s,
+                other => anyhow::bail!("unexpected response {other:?}"),
+            };
+            {
+                let mut shared = shared.lock();
+                if shared.path != path {
+                    // Another root was opened meanwhile.
+                    return Ok(());
+                }
+                shared.tree_root = Some(snapshot.root.clone());
+            }
+            push_tree_and_classes(&mut client, &sink, snapshot, &path).await
+        });
+    }
+
     fn with_client<F, Fut>(&self, what: &'static str, f: F)
     where
         F: FnOnce(Client, EventSink) -> Fut + Send + 'static,
@@ -621,14 +697,12 @@ async fn push_tree_and_classes(
 impl Backend for DaemonBackend {
     fn start(&mut self, sink: EventSink) {
         self.sink = Some(sink.clone());
-        let path = self.path.clone();
         let shared = Arc::clone(&self.shared);
         let options = self.options.clone();
         let dashboard = Arc::clone(&self.dashboard);
         self.spawn_dashboard(&sink);
         // Event subscription.
         let event_sink = sink;
-        let event_path = path.clone();
         self.handle.spawn(async move {
             let started = Instant::now();
             let mut client = match Client::connect(&options).await {
@@ -652,7 +726,10 @@ impl Backend for DaemonBackend {
                 ) {
                     dashboard.notify_one();
                 }
-                let tree_root = shared.lock().tree_root.clone();
+                let (event_path, tree_root) = {
+                    let shared = shared.lock();
+                    (shared.path.clone(), shared.tree_root.clone())
+                };
                 match event {
                     Event::ScanProgress { root, progress }
                         if tree_root.as_ref() == Some(&root) || root == event_path =>
@@ -695,23 +772,16 @@ impl Backend for DaemonBackend {
                 detail: Some("daemon connection closed".to_owned()),
             }));
         });
-        // Initial tree.
-        let shared = Arc::clone(&self.shared);
-        self.with_client("initial scan", move |mut client, sink| async move {
-            let snapshot = match client
-                .request(Request::Scan {
-                    root: path.clone(),
-                    force: false,
-                    wait: true,
-                })
-                .await?
-            {
-                Response::Snapshot(s) => s,
-                other => anyhow::bail!("unexpected response {other:?}"),
-            };
-            shared.lock().tree_root = Some(snapshot.root.clone());
-            push_tree_and_classes(&mut client, &sink, snapshot, &path).await
-        });
+        self.load_tree("initial scan");
+    }
+
+    fn open_root(&mut self, path: PathBuf) {
+        {
+            let mut shared = self.shared.lock();
+            shared.path = path;
+            shared.tree_root = None;
+        }
+        self.load_tree("open");
     }
 
     fn expand(&mut self, path: PathBuf) {
@@ -742,7 +812,7 @@ impl Backend for DaemonBackend {
     }
 
     fn rescan(&mut self, path: PathBuf) {
-        let root = self.path.clone();
+        let root = self.shared.lock().path.clone();
         self.with_client("rescan", move |mut client, _sink| async move {
             let request = if path == root {
                 Request::Scan {

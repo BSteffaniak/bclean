@@ -72,7 +72,9 @@ pub struct ScanConfig {
     pub size_mode: SizeModeSpec,
     /// Worker threads (`None` = available parallelism).
     pub threads: Option<usize>,
-    /// Glob patterns excluded from scanning entirely.
+    /// Glob patterns excluded from scanning entirely. The default skips
+    /// `/nix/store/.links`, the Nix store's directory of hard links (millions of entries
+    /// that only duplicate store files).
     pub exclude: Vec<String>,
     /// Count matched ephemeral directories without materializing their children.
     pub summarize_ephemeral: bool,
@@ -86,7 +88,7 @@ impl Default for ScanConfig {
             one_filesystem: true,
             size_mode: SizeModeSpec::Allocated,
             threads: None,
-            exclude: Vec::new(),
+            exclude: vec!["/nix/store/.links".to_owned()],
             summarize_ephemeral: true,
             backend: ScanBackend::Auto,
         }
@@ -670,6 +672,18 @@ pub struct MonitorConfig {
     pub poll_interval: DurationSpec,
     /// Roots the daemon indexes and keeps up to date.
     pub index_roots: Vec<String>,
+    /// Also index every other mounted drive (internal disks, USB and external drives) as its
+    /// own root, following drives as they are mounted and unmounted. Skipped: network,
+    /// RAM-backed, and read-only filesystems, boot/EFI partitions, volumes under 1 GiB, and
+    /// volumes already holding an index root (`/` when `~` is indexed). `-x` turns it off
+    /// for one process.
+    pub index_volumes: bool,
+    /// Drives never auto-indexed: mount points or glob patterns (`/mnt/backup`, `/media/*`).
+    pub exclude_volumes: Vec<String>,
+    /// Upper bound on inotify watches (Linux, without fanotify privileges). `0` = 40% of
+    /// `fs.inotify.max_user_watches`. Directories beyond it are kept current by budgeted
+    /// rescans instead of live events.
+    pub max_watches: usize,
     /// How often to record history rollups.
     pub history_interval: DurationSpec,
     /// How long to keep history.
@@ -696,6 +710,9 @@ impl Default for MonitorConfig {
             volumes: vec!["*".to_owned()],
             poll_interval: DurationSpec(std::time::Duration::from_secs(30)),
             index_roots: vec!["~".to_owned()],
+            index_volumes: true,
+            exclude_volumes: Vec::new(),
+            max_watches: 0,
             history_interval: DurationSpec(std::time::Duration::from_secs(3_600)),
             history_retention: DurationSpec::days(90),
             history_depth: 4,

@@ -28,6 +28,8 @@ pub struct Ctx {
     pub config_file: Option<PathBuf>,
     /// `--no-daemon`.
     pub no_daemon: bool,
+    /// `-x` / `--one-file-system`.
+    pub one_filesystem: bool,
 }
 
 impl Ctx {
@@ -36,8 +38,13 @@ impl Ctx {
     /// # Errors
     ///
     /// * If configuration cannot be loaded or rules don't compile
-    pub fn load(config_file: Option<PathBuf>, no_daemon: bool) -> anyhow::Result<Self> {
-        let options = EngineOptions::from_process(config_file.clone())?;
+    pub fn load(
+        config_file: Option<PathBuf>,
+        no_daemon: bool,
+        one_filesystem: bool,
+    ) -> anyhow::Result<Self> {
+        let mut options = EngineOptions::from_process(config_file.clone())?;
+        options.one_filesystem = one_filesystem;
         let settings = Settings::load(&options.load)?;
         let dirs = options.load.expander.app_dirs()?;
         Ok(Self {
@@ -46,6 +53,7 @@ impl Ctx {
             dirs,
             config_file,
             no_daemon,
+            one_filesystem,
         })
     }
 
@@ -82,10 +90,22 @@ impl Ctx {
         options
     }
 
+    /// Client options for explicitly starting the daemon (`daemon start/restart`): like
+    /// [`Ctx::client_options`], passing `-x` on to the daemon. Autostarts from other commands
+    /// never pass it, so one `bclean -x` session does not change the shared daemon.
+    #[must_use]
+    pub fn daemon_options(&self) -> ClientOptions {
+        let mut options = self.client_options();
+        if self.one_filesystem {
+            options.daemon_args.insert(0, "--one-file-system".into());
+        }
+        options
+    }
+
     /// Arguments that run the daemon in the foreground (for service units).
     #[must_use]
     pub fn daemon_args(&self) -> Vec<OsString> {
-        self.client_options().daemon_args
+        self.daemon_options().daemon_args
     }
 
     /// Opens the in-process engine.

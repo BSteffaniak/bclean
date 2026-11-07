@@ -89,6 +89,7 @@ async fn engine(fx: &Fixture) -> Engine {
     Engine::open(EngineOptions {
         load: LoadOptions::new(fx.root.clone(), expander),
         data_dir: Some(fx.home.join("data")),
+        one_filesystem: true,
     })
     .await
     .unwrap()
@@ -343,6 +344,7 @@ async fn daemon_flows_through_the_client() {
     let Response::Dashboard(summary) = client
         .request(Request::Dashboard {
             roots: vec![fx.root.clone()],
+            one_filesystem: false,
         })
         .await
         .unwrap()

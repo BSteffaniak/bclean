@@ -147,6 +147,8 @@ struct WorkerState {
     spare: Listing,
     jobs: Vec<Job>,
     visited: u32,
+    /// [`ScanProgress`]'s counter of entries in listings still being read.
+    live: Arc<AtomicU64>,
 }
 
 /// Runs a full walk and returns the built tree plus per-path issues.
@@ -208,6 +210,7 @@ pub fn walk(params: WalkParams<'_>) -> Result<(Tree, Vec<ScanIssue>), ScanError>
                 spare: Listing::default(),
                 jobs: Vec::new(),
                 visited: 0,
+                live: shared.progress.listing_counter(),
             };
             let shared = &shared;
             let spawned = std::thread::Builder::new()
@@ -397,7 +400,7 @@ impl Shared<'_> {
         subdirs: &mut Vec<usize>,
     ) -> (u64, u64, u64) {
         let (mut files, mut bytes, mut errors) = (0u64, 0u64, 0u64);
-        let Listing { names, entries } = listing;
+        let Listing { names, entries, .. } = listing;
         for (i, e) in entries.iter_mut().enumerate() {
             let start = e.name_off as usize;
             let name = os_str(&names[start..start + e.name_len as usize]);
@@ -458,6 +461,7 @@ impl Shared<'_> {
         self.sample(state, path);
         let mut listing = state.recycled.try_recv().unwrap_or_default();
         listing.clear();
+        listing.report_to(&state.live);
         let mut dir_error = false;
         let mut errors = 0u64;
         let mut handle = None;
@@ -469,6 +473,7 @@ impl Shared<'_> {
                 errors += 1;
             }
         }
+        listing.settle();
 
         let mut subdirs: Vec<usize> = Vec::new();
         let (files, bytes, entry_errors) = self.classify(path, &mut listing, &mut subdirs);
@@ -543,6 +548,7 @@ impl Shared<'_> {
         self.sample(state, path);
         let mut listing = std::mem::take(&mut state.spare);
         listing.clear();
+        listing.report_to(&state.live);
         let mut errors = 0u64;
         let mut handle = None;
         match state.reader.list(path, parent, &mut listing) {
@@ -553,6 +559,7 @@ impl Shared<'_> {
                 errors += 1;
             }
         }
+        listing.settle();
         let mut retained: Option<Option<Arc<Retained>>> = None;
         let (mut apparent, mut allocated, mut items, mut files) = (0u64, 0u64, 0u64, 0u64);
         let mut max_mtime = i64::MIN;

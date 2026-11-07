@@ -24,8 +24,17 @@ use crate::listing::{
 };
 use crate::widgets::FixedRowsState;
 
+/// Where to land in a tree requested with [`Backend::open_root`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPosition {
+    root: PathBuf,
+    cwd: PathBuf,
+    selected: Option<PathBuf>,
+}
+
 /// Start-up options for the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent start-up switches
 pub struct TuiOptions {
     /// Title shown in the header.
     pub title: String,
@@ -41,6 +50,8 @@ pub struct TuiOptions {
     pub start_on_dashboard: bool,
     /// Directory to open once the first tree arrives (inside the scan root), if not the root.
     pub initial_path: Option<PathBuf>,
+    /// Treat mount points as boundaries instead of opening their drives (`-x`).
+    pub one_filesystem: bool,
     /// Minimum interval between frames (`None` = unthrottled).
     pub frame_interval: Option<Duration>,
 }
@@ -55,6 +66,7 @@ impl Default for TuiOptions {
             sort: SortSpec::default(),
             start_on_dashboard: false,
             initial_path: None,
+            one_filesystem: false,
             frame_interval: Some(Duration::from_millis(16)),
         }
     }
@@ -226,6 +238,11 @@ pub struct App<B: Backend> {
     /// Kind/category restriction of flat lenses (from a dashboard drill-down).
     pub(crate) lens_filter: Option<LensFilter>,
     initial_path: Option<PathBuf>,
+    /// Roots browsed before the current one, each with the mount point that was opened from it
+    /// (go up from a drive's top returns there).
+    root_stack: Vec<(PathBuf, PathBuf)>,
+    /// Position to take once the tree rooted at `.root` arrives (after [`Backend::open_root`]).
+    pending_position: Option<PendingPosition>,
     pub(crate) status: Option<BackendStatus>,
     pub(crate) message: Option<(String, MessageLevel)>,
     pub(crate) expanding: BTreeSet<PathBuf>,
@@ -276,6 +293,8 @@ impl<B: Backend> App<B> {
             dash: DashState::default(),
             lens_filter: None,
             initial_path,
+            root_stack: Vec::new(),
+            pending_position: None,
             status: None,
             message: None,
             expanding: BTreeSet::new(),
@@ -458,7 +477,24 @@ impl<B: Backend> App<B> {
     }
 
     fn replace_tree(&mut self, tree: Arc<Tree>) {
-        let (cwd_path, selected_path) = self.capture_position();
+        let (cwd_path, selected_path) = match self.pending_position.take() {
+            Some(pending) if pending.root == tree.root_path() => {
+                if self
+                    .message
+                    .as_ref()
+                    .is_some_and(|(text, _)| text.starts_with("opening "))
+                {
+                    self.message = None;
+                }
+                self.lens_rows.clear();
+                (Some(pending.cwd), pending.selected)
+            }
+            pending => {
+                // A late update of the previous root: keep waiting for the requested one.
+                self.pending_position = pending;
+                self.capture_position()
+            }
+        };
         let current = Arc::clone(&tree);
         self.tree = Some(tree);
         self.on_tree_changed(cwd_path, selected_path);
@@ -1117,6 +1153,10 @@ impl<B: Backend> App<B> {
         if tree.kind(id) != EntryKind::Dir {
             return;
         }
+        if tree.flags(id).contains(NodeFlags::OTHER_FS) {
+            self.open_drive(&tree, id);
+            return;
+        }
         if tree.flags(id).contains(NodeFlags::SUMMARIZED) && !tree.has_children(id) {
             let path = tree.path(id);
             if self.expanding.insert(path.clone()) {
@@ -1133,6 +1173,39 @@ impl<B: Backend> App<B> {
         self.enter_dir(id);
     }
 
+    /// Opens the drive mounted at `id` (another filesystem) as the browsed root.
+    fn open_drive(&mut self, tree: &Tree, id: NodeId) {
+        let mount = tree.path(id);
+        if self.options.one_filesystem {
+            self.info(
+                format!(
+                    "{} is another filesystem (-x)",
+                    crate::dashboard::tilde(&mount)
+                ),
+                MessageLevel::Info,
+            );
+            return;
+        }
+        self.root_stack
+            .push((tree.root_path().to_path_buf(), mount.clone()));
+        self.open_root(mount.clone(), mount, None);
+    }
+
+    /// Asks the backend for the tree rooted at `root`, to be shown at `cwd` with `selected`.
+    fn open_root(&mut self, root: PathBuf, cwd: PathBuf, selected: Option<PathBuf>) {
+        self.info(
+            format!("opening {}…", crate::dashboard::tilde(&root)),
+            MessageLevel::Info,
+        );
+        self.pending_position = Some(PendingPosition {
+            root: root.clone(),
+            cwd,
+            selected,
+        });
+        self.filter.clear();
+        self.backend.open_root(root);
+    }
+
     fn go_up(&mut self) {
         if self.lens.is_flat() {
             return;
@@ -1141,6 +1214,13 @@ impl<B: Backend> App<B> {
             return;
         };
         let Some(parent) = tree.parent(self.cwd) else {
+            // At the top of a drive opened from another root: back to that root.
+            if let Some((previous, mount)) = self.root_stack.pop() {
+                let cwd = mount
+                    .parent()
+                    .map_or_else(|| previous.clone(), Path::to_path_buf);
+                self.open_root(previous, cwd, Some(mount));
+            }
             return;
         };
         let child = self.cwd;

@@ -23,6 +23,8 @@ pub struct InMemoryBackend {
     tree: Option<Arc<Tree>>,
     classifications: BTreeMap<PathBuf, Classification>,
     subtrees: BTreeMap<PathBuf, Arc<Tree>>,
+    /// Other roots (drives) served by [`Backend::open_root`], keyed by root path.
+    roots: BTreeMap<PathBuf, Arc<Tree>>,
     volumes: Vec<VolumeStats>,
     alerts: Vec<AlertEvent>,
     dashboard: Option<DashboardSummary>,
@@ -65,6 +67,15 @@ impl InMemoryBackend {
     #[must_use]
     pub fn with_subtree(mut self, path: PathBuf, subtree: Tree) -> Self {
         self.subtrees.insert(path, Arc::new(subtree));
+        self
+    }
+
+    /// Registers another root (a drive mounted inside the main tree) for
+    /// [`Backend::open_root`].
+    #[must_use]
+    pub fn with_root(mut self, tree: Tree) -> Self {
+        self.roots
+            .insert(tree.root_path().to_path_buf(), Arc::new(tree));
         self
     }
 
@@ -162,6 +173,26 @@ impl Backend for InMemoryBackend {
 
     fn rescan(&mut self, path: PathBuf) {
         self.log.push(format!("rescan {}", path.display()));
+        self.send_tree();
+    }
+
+    fn open_root(&mut self, path: PathBuf) {
+        self.log.push(format!("open root {}", path.display()));
+        if self.tree.as_ref().is_some_and(|t| t.root_path() == path) {
+            self.send_tree();
+            return;
+        }
+        let Some(next) = self.roots.remove(&path) else {
+            self.send(BackendEvent::Error(format!(
+                "cannot open {}: no data",
+                path.display()
+            )));
+            return;
+        };
+        if let Some(previous) = self.tree.replace(next) {
+            self.roots
+                .insert(previous.root_path().to_path_buf(), previous);
+        }
         self.send_tree();
     }
 

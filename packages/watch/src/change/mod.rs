@@ -10,7 +10,7 @@
 //! |----------|---------|-------------------|
 //! | macOS    | FSEvents (`FSEventStreamCreate`, directory-level, event-id cursor) | yes |
 //! | Linux    | fanotify filesystem marks with `FAN_REPORT_DFID_NAME` (needs `CAP_SYS_ADMIN`) | no |
-//! | Linux    | inotify via `notify` (recursive, unprivileged fallback) | no |
+//! | Linux    | inotify via `notify` (per-directory watches within a budget, unprivileged fallback) | no |
 //! | Windows  | `ReadDirectoryChangesW` via `notify` | no |
 //!
 //! Without replay the cursor is always `None`; after downtime the caller should rescan using
@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 mod fanotify;
 #[cfg(target_os = "macos")]
 mod fsevents;
+#[cfg(target_os = "linux")]
+mod inotify;
 #[cfg(any(target_os = "linux", windows))]
 mod notify_source;
 
@@ -133,6 +135,10 @@ pub struct WatchConfig {
     pub collapse_threshold: usize,
     /// Prefer privileged native backends (fanotify) over `notify` where both exist.
     pub prefer_native: bool,
+    /// Upper bound on inotify watches (Linux fallback); `0` = 40% of the per-user limit.
+    pub max_watches: usize,
+    /// How often subtrees left unwatched by `max_watches` are reported for rescanning.
+    pub unwatched_rescan_interval: Duration,
 }
 
 impl WatchConfig {
@@ -146,6 +152,8 @@ impl WatchConfig {
             max_latency: Duration::from_secs(5),
             collapse_threshold: 256,
             prefer_native: true,
+            max_watches: 0,
+            unwatched_rescan_interval: Duration::from_secs(300),
         }
     }
 }
@@ -178,8 +186,8 @@ pub trait ChangeSource: Send {
 /// # Errors
 ///
 /// * [`WatchError::NoRoots`] if `config.roots` is empty
-/// * [`WatchError::Io`] / [`WatchError::Backend`] if the backend cannot start (missing root,
-///   inotify watch limit, ...)
+/// * [`WatchError::Io`] / [`WatchError::Backend`] if the backend cannot start. Roots or
+///   directories that cannot be watched individually are skipped (and logged) instead.
 /// * [`WatchError::Unsupported`] on platforms without a backend
 pub fn open_change_source(config: &WatchConfig) -> Result<Box<dyn ChangeSource>, WatchError> {
     if config.roots.is_empty() {
@@ -197,7 +205,7 @@ pub fn open_change_source(config: &WatchConfig) -> Result<Box<dyn ChangeSource>,
                 Err(e) => log::info!("fanotify unavailable ({e}); falling back to inotify"),
             }
         }
-        Ok(Box::new(notify_source::NotifySource::start(config)?))
+        Ok(Box::new(inotify::InotifySource::start(config)?))
     }
     #[cfg(windows)]
     {

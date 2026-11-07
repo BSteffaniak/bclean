@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bclean_actions::{CancelToken, Plan};
@@ -105,9 +106,10 @@ pub async fn handle(
 ) -> Result<Response, EngineError> {
     Ok(match request {
         Request::Status => Response::Status(engine.status(version)),
-        Request::Dashboard { roots } => {
-            Response::Dashboard(Box::new(engine.dashboard(&roots).await?))
-        }
+        Request::Dashboard {
+            roots,
+            one_filesystem,
+        } => Response::Dashboard(Box::new(engine.dashboard(&roots, one_filesystem).await?)),
         Request::Volumes => Response::Volumes {
             volumes: engine.volumes().await?,
         },
@@ -228,14 +230,18 @@ pub async fn run_daemon(engine: Engine, endpoint: Endpoint, version: &str) -> st
 ///    persisted watch cursor when the backend supports it, else rescan
 /// 2. apply change-source batches incrementally (batches queued while one is applied are
 ///    merged into a single update)
-/// 3. sample volumes every `monitor.poll_interval` and evaluate policies
+/// 3. sample volumes every `monitor.poll_interval` and evaluate policies; index drives as
+///    they are mounted and unload them when they go away (`monitor.index_volumes`)
 /// 4. record history rollups every `monitor.history_interval` (with retention)
 /// 5. every [`MAINTENANCE_INTERVAL`], re-measure postponed summarized directories and save
 ///    snapshots whose changes are older than `monitor.persist_interval`
 ///
 /// Returns (after persisting every root) once `shutdown` becomes `true`.
 pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
-    let (mut batch_rx, initial) = start_indexing(&engine).await;
+    if let Err(e) = engine.refresh_volume_roots().await {
+        log::warn!("cannot detect drives to index: {e}");
+    }
+    let mut indexing = Indexing::start(&engine).await;
 
     let monitor = engine.settings().config().monitor.clone();
     let poll_every = monitor.poll_interval.duration().max(Duration::from_secs(1));
@@ -254,7 +260,6 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
         MAINTENANCE_INTERVAL,
     );
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut watching = true;
 
     loop {
         tokio::select! {
@@ -263,15 +268,12 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
                     break;
                 }
             }
-            batch = batch_rx.recv(), if watching => match batch {
-                Some(batch) => {
-                    for batch in merge_queued(batch, &mut batch_rx) {
-                        if let Err(e) = engine.apply_batch(batch).await {
-                            log::warn!("failed to apply change batch: {e}");
-                        }
+            Some(batch) = indexing.batches.recv() => {
+                for batch in merge_queued(batch, &mut indexing.batches) {
+                    if let Err(e) = engine.apply_batch(batch).await {
+                        log::warn!("failed to apply change batch: {e}");
                     }
                 }
-                None => watching = false,
             },
             _ = maintenance.tick() => {
                 if let Err(e) = engine.refresh_deferred().await {
@@ -281,20 +283,23 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
                     log::warn!("failed to persist snapshots: {e}");
                 }
             }
-            _ = poll.tick() => match engine.sample_volumes().await {
-                Ok(volumes) => match engine.evaluate_policies(&volumes).await {
-                    Ok(outcomes) => {
-                        for outcome in outcomes {
-                            log::info!(
-                                "policy {}: {} item(s) planned",
-                                outcome.firing.policy_id,
-                                outcome.plan.map_or(0, |p| p.len())
-                            );
+            _ = poll.tick() => {
+                indexing.refresh_drives(&engine).await;
+                match engine.sample_volumes().await {
+                    Ok(volumes) => match engine.evaluate_policies(&volumes).await {
+                        Ok(outcomes) => {
+                            for outcome in outcomes {
+                                log::info!(
+                                    "policy {}: {} item(s) planned",
+                                    outcome.firing.policy_id,
+                                    outcome.plan.map_or(0, |p| p.len())
+                                );
+                            }
                         }
-                    }
-                    Err(e) => log::warn!("policy evaluation failed: {e}"),
-                },
-                Err(e) => log::warn!("volume sampling failed: {e}"),
+                        Err(e) => log::warn!("policy evaluation failed: {e}"),
+                    },
+                    Err(e) => log::warn!("volume sampling failed: {e}"),
+                }
             },
             _ = history.tick() => {
                 if let Err(e) = engine.record_rollups().await {
@@ -303,69 +308,169 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
             }
         }
     }
-    initial.abort();
+    indexing.stop();
     if let Err(e) = engine.persist_all().await {
         log::warn!("failed to persist snapshots at shutdown: {e}");
     }
 }
 
-/// Loads snapshots, starts the change source, and spawns the initial reconciliation scans.
-async fn start_indexing(
-    engine: &Engine,
-) -> (
-    mpsc::UnboundedReceiver<ChangeBatch>,
-    tokio::task::JoinHandle<()>,
-) {
-    let roots = engine.index_roots();
-    let mut needs_scan: Vec<PathBuf> = Vec::new();
-    for root in &roots {
-        match engine.load_snapshot(root).await {
-            Ok(Some(meta)) if meta.cursor.is_some() => {}
-            Ok(_) => needs_scan.push(root.clone()),
-            Err(e) => {
-                log::warn!("cannot load snapshot for {}: {e}", root.display());
+/// Index roots, the change source watching them, and the queue of full scans.
+struct Indexing {
+    /// Change batches from the current source (the channel outlives source restarts).
+    batches: mpsc::UnboundedReceiver<ChangeBatch>,
+    batch_tx: mpsc::UnboundedSender<ChangeBatch>,
+    /// Stops the current source's forwarding thread (which owns and drops the source).
+    source_stop: Option<Arc<AtomicBool>>,
+    /// Cursor of the current source, recorded with full scans.
+    cursor: Option<Vec<u8>>,
+    /// Roots to scan from scratch, one after another, with the cursor to record.
+    scans: mpsc::UnboundedSender<(PathBuf, Option<Vec<u8>>)>,
+    scanner: tokio::task::JoinHandle<()>,
+}
+
+impl Indexing {
+    /// Loads snapshots, starts the change source, and queues the initial reconciliation scans.
+    async fn start(engine: &Engine) -> Self {
+        let roots = engine.index_roots();
+        let mut needs_scan: Vec<PathBuf> = Vec::new();
+        for root in &roots {
+            if !load_snapshot(engine, root).await {
                 needs_scan.push(root.clone());
             }
         }
+        let (batch_tx, batches) = mpsc::unbounded_channel::<ChangeBatch>();
+        let (scans, mut queue) = mpsc::unbounded_channel::<(PathBuf, Option<Vec<u8>>)>();
+        let scanner_engine = engine.clone();
+        let scanner = tokio::spawn(async move {
+            while let Some((root, cursor)) = queue.recv().await {
+                // A drive unmounted while its scan was queued would scan as an empty
+                // directory and overwrite its snapshot.
+                if !scanner_engine.index_roots().contains(&root) {
+                    continue;
+                }
+                if let Err(e) = scanner_engine.scan_with_cursor(&root, cursor).await {
+                    log::warn!("initial scan of {} failed: {e}", root.display());
+                }
+            }
+        });
+        let mut indexing = Self {
+            batches,
+            batch_tx,
+            source_stop: None,
+            cursor: None,
+            scans,
+            scanner,
+        };
+        if indexing.watch(engine, &roots) != Replay::Replays {
+            needs_scan.clone_from(&roots);
+        }
+        // Configured roots (usually the home directory) first; whole drives can take minutes.
+        let configured = engine.settings().index_roots();
+        needs_scan.sort_by_key(|root| !configured.contains(root));
+        for root in needs_scan {
+            indexing.queue_scan(root);
+        }
+        indexing
     }
 
-    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<ChangeBatch>();
-    let mut scan_cursor = None;
-    if !roots.is_empty() {
-        let config = engine.watch_config(&roots);
+    fn queue_scan(&self, root: PathBuf) {
+        let _ = self.scans.send((root, self.cursor.clone()));
+    }
+
+    /// (Re)starts the change source on `roots`, replacing the current one.
+    fn watch(&mut self, engine: &Engine, roots: &[PathBuf]) -> Replay {
+        if let Some(stop) = self.source_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        self.cursor = None;
+        engine.set_watchers(Vec::new());
+        if roots.is_empty() {
+            return Replay::Unavailable;
+        }
+        let config = engine.watch_config(roots);
         match bclean_watch::open_change_source(&config) {
             Ok(source) => {
                 let name = format!("{:?}", source.backend()).to_uppercase();
                 log::info!("watching {} root(s) with {name}", roots.len());
                 engine.set_watchers(vec![name]);
-                if !source.supports_replay() || config.since.is_none() {
-                    needs_scan.clone_from(&roots);
-                }
-                scan_cursor = source.current_cursor().map(|c| c.to_bytes());
-                let tx = batch_tx.clone();
-                std::thread::Builder::new()
+                let replay = if source.supports_replay() && config.since.is_some() {
+                    Replay::Replays
+                } else {
+                    Replay::Unavailable
+                };
+                self.cursor = source.current_cursor().map(|c| c.to_bytes());
+                let stop = Arc::new(AtomicBool::new(false));
+                let flag = Arc::clone(&stop);
+                let tx = self.batch_tx.clone();
+                match std::thread::Builder::new()
                     .name("bclean-watch".to_owned())
-                    .spawn(move || forward_batches(&*source, &tx))
-                    .map_or_else(|e| log::warn!("cannot start watch thread: {e}"), drop);
+                    .spawn(move || forward_batches(&*source, &tx, &flag))
+                {
+                    Ok(_) => self.source_stop = Some(stop),
+                    Err(e) => log::warn!("cannot start watch thread: {e}"),
+                }
+                replay
             }
             Err(e) => {
                 log::warn!("filesystem watching unavailable: {e}");
-                needs_scan.clone_from(&roots);
+                Replay::Unavailable
             }
         }
     }
-    drop(batch_tx);
 
-    let scanner = engine.clone();
-    let initial = tokio::spawn(async move {
-        for root in needs_scan {
-            if let Err(e) = scanner.scan_with_cursor(&root, scan_cursor.clone()).await {
-                log::warn!("initial scan of {} failed: {e}", root.display());
+    /// Picks up mounted and unmounted drives: unloads drives that went away, indexes new ones,
+    /// and restarts the change source on the new set of roots.
+    async fn refresh_drives(&mut self, engine: &Engine) {
+        let changes = match engine.refresh_volume_roots().await {
+            Ok(changes) if !changes.is_empty() => changes,
+            Ok(_) => return,
+            Err(e) => {
+                log::warn!("cannot detect drives to index: {e}");
+                return;
+            }
+        };
+        for root in &changes.removed {
+            log::info!("drive {} went away; unloading its index", root.display());
+            if let Err(e) = engine.unload_root(root).await {
+                log::warn!("cannot save the index of {}: {e}", root.display());
             }
         }
-    });
+        for root in &changes.added {
+            log::info!("drive {} appeared; indexing it", root.display());
+            load_snapshot(engine, root).await;
+        }
+        self.watch(engine, &engine.index_roots());
+        // Without replay the snapshot of a returning drive may be out of date.
+        for root in changes.added {
+            self.queue_scan(root);
+        }
+    }
 
-    (batch_rx, initial)
+    fn stop(&mut self) {
+        if let Some(stop) = self.source_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        self.scanner.abort();
+    }
+}
+
+/// Whether a change source replays what happened while the daemon was down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replay {
+    Replays,
+    Unavailable,
+}
+
+/// Loads `root`'s snapshot; `true` if one with a replayable watch cursor was found.
+async fn load_snapshot(engine: &Engine, root: &std::path::Path) -> bool {
+    match engine.load_snapshot(root).await {
+        Ok(Some(meta)) => meta.cursor.is_some(),
+        Ok(None) => false,
+        Err(e) => {
+            log::warn!("cannot load snapshot for {}: {e}", root.display());
+            false
+        }
+    }
 }
 
 /// Minimum time between two `TREE_UPDATED` events for one root sent to clients.
@@ -457,8 +562,9 @@ fn merge_queued(
 fn forward_batches(
     source: &dyn bclean_watch::ChangeSource,
     tx: &mpsc::UnboundedSender<ChangeBatch>,
+    stop: &AtomicBool,
 ) {
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         match source.batches().recv_timeout(Duration::from_secs(1)) {
             Ok(batch) => {
                 if tx.send(batch).is_err() {

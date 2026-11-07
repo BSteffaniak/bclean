@@ -191,6 +191,9 @@ pub enum Request {
         /// Extra roots to include, if loaded.
         #[serde(default)]
         roots: Vec<PathBuf>,
+        /// Only include roots and volumes on the filesystems of `roots` (`-x`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        one_filesystem: bool,
     },
     /// Subscribe this connection to event topics.
     Subscribe {

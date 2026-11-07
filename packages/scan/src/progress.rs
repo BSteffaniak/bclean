@@ -1,6 +1,7 @@
 //! Live progress counters and cancellation shared between a scan and its observers.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::Mutex;
@@ -15,6 +16,9 @@ pub struct ScanProgress {
     files: AtomicU64,
     bytes: AtomicU64,
     errors: AtomicU64,
+    /// Entries read so far from directories whose listing is still in progress, so a single
+    /// directory with millions of entries does not freeze the counters while it is read.
+    listing: Arc<AtomicU64>,
     cancelled: AtomicBool,
     current: Mutex<PathBuf>,
 }
@@ -44,7 +48,7 @@ impl ScanProgress {
     pub fn snapshot(&self) -> ProgressSnapshot {
         ProgressSnapshot {
             dirs: self.dirs.load(Ordering::Relaxed),
-            files: self.files.load(Ordering::Relaxed),
+            files: self.files.load(Ordering::Relaxed) + self.listing.load(Ordering::Relaxed),
             bytes: self.bytes.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
         }
@@ -74,6 +78,7 @@ impl ScanProgress {
         self.files.store(0, Ordering::Relaxed);
         self.bytes.store(0, Ordering::Relaxed);
         self.errors.store(0, Ordering::Relaxed);
+        self.listing.store(0, Ordering::Relaxed);
         self.cancelled.store(false, Ordering::Relaxed);
         self.current.lock().clear();
     }
@@ -91,6 +96,11 @@ impl ScanProgress {
         if errors != 0 {
             self.errors.fetch_add(errors, Ordering::Relaxed);
         }
+    }
+
+    /// Counter of entries read from listings still in progress (see [`crate::Listing`]).
+    pub(crate) fn listing_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.listing)
     }
 
     /// Records `path` as the current sample if nobody else holds the lock.

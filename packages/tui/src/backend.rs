@@ -60,6 +60,14 @@ pub trait Backend: Send + 'static {
     /// Backends should also push a new [`BackendEvent::Dashboard`] on their own when the
     /// underlying data changes (throttled).
     fn refresh_dashboard(&mut self) {}
+
+    /// Browses the tree rooted at `path` instead of the current root: the mount point of
+    /// another drive, or the root browsed before it. The backend loads it (scanning it first
+    /// if it is not indexed yet) and sends it as [`BackendEvent::Tree`]; progress and updates
+    /// from then on are about the new root.
+    fn open_root(&mut self, path: PathBuf) {
+        let _ = path;
+    }
 }
 
 impl<B: Backend + ?Sized> Backend for Box<B> {
@@ -86,6 +94,9 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
     }
     fn refresh_dashboard(&mut self) {
         (**self).refresh_dashboard();
+    }
+    fn open_root(&mut self, path: PathBuf) {
+        (**self).open_root(path);
     }
 }
 

@@ -566,7 +566,11 @@ impl<B: Backend> RowCtx<'_, B> {
             });
         }
         if flags.contains(NodeFlags::OTHER_FS) {
-            suffix.push_str(" (other fs)");
+            suffix.push_str(if self.app.options.one_filesystem {
+                " (other fs)"
+            } else {
+                " (drive ↵)"
+            });
         }
         if tree.kind(id) == EntryKind::Symlink {
             suffix.push_str(" →");
