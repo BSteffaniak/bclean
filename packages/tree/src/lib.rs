@@ -103,6 +103,18 @@ impl NodeFlags {
         Self(self.0 | other.0)
     }
 
+    /// Returns `true` if any flag in `other` is set in `self`.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Returns the flags set in both.
+    #[must_use]
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
     /// Returns `self` with the flags in `other` cleared.
     #[must_use]
     pub const fn without(self, other: Self) -> Self {

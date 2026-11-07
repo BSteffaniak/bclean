@@ -63,6 +63,19 @@ alarms, and can auto-clean).
 - Snapshot of `TreeParts` on disk; SQLite for history rollups and the action journal.
 - macOS FSEvents and Windows USN journal replay changes since the last event id, even after
   downtime. Linux uses fanotify when privileged, else inotify + periodic dirty rescans.
+- Change events name directories whose *own entries* changed. Each is reconciled shallowly:
+  re-list that one directory, update changed entries, drop removed ones, and scan only new
+  subdirectories. Unchanged subtrees are never read, so a dotfile saved in `~` costs one
+  directory listing, not a rescan of the home directory. Subtree rescans happen only when the
+  event history is incomplete (dropped events, FSEvents `MustScanSubDirs`, root moved).
+- Changes inside a summarized directory (`target/` during a build) re-measure it at most once
+  per `monitor.summary_refresh_interval` (default 1m).
+- bclean's own data, cache, and runtime directories are ignored by the watcher, so its snapshot
+  and database writes never feed back into the index.
+- Incremental updates are saved when an IPC client needs the snapshot file (a request, or a
+  `TREE_UPDATED` event to a subscriber, at most once a second) and otherwise after
+  `monitor.persist_interval` (default 5m) and at shutdown. The watch cursor is saved with the
+  snapshot, so unsaved changes are replayed after a crash.
 - After any action, measure actual freed space via volume stats (APFS clones/snapshots make
   estimates fuzzy).
 

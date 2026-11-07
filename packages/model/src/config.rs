@@ -676,6 +676,13 @@ pub struct MonitorConfig {
     pub history_retention: DurationSpec,
     /// Directory depth recorded in history rollups.
     pub history_depth: usize,
+    /// How long incremental index updates may stay unsaved before the snapshot is rewritten.
+    /// Full scans and shutdown always save; the watch cursor is saved with the snapshot, so
+    /// unsaved changes are replayed after a crash where the backend supports it.
+    pub persist_interval: DurationSpec,
+    /// Minimum time between re-measurements of one summarized directory (`node_modules`,
+    /// `target`, ...) while changes keep arriving inside it, for example during a build.
+    pub summary_refresh_interval: DurationSpec,
 }
 
 impl Default for MonitorConfig {
@@ -687,6 +694,8 @@ impl Default for MonitorConfig {
             history_interval: DurationSpec(std::time::Duration::from_secs(3_600)),
             history_retention: DurationSpec::days(90),
             history_depth: 4,
+            persist_interval: DurationSpec(std::time::Duration::from_mins(5)),
+            summary_refresh_interval: DurationSpec(std::time::Duration::from_mins(1)),
         }
     }
 }

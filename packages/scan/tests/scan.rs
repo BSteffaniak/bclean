@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use bclean_scan::{
     ListedEntry, NoPrune, PruneOracle, ScanBackend, ScanError, ScanOptions, ScanOutcome,
-    ScanProgress, scan, scan_subtree,
+    ScanProgress, scan, scan_shallow, scan_subtree,
 };
 use bclean_tree::{EntryKind, NodeFlags, NodeId, NodeInfo, SizeMode, Tree};
 
@@ -201,6 +201,50 @@ fn oracle_summarizes() {
             full.tree.size(NodeId::ROOT, SizeMode::Allocated)
         );
         assert_eq!(pruned.tree.len() + 6, full.tree.len());
+    }
+}
+
+#[test]
+fn shallow_lists_only_direct_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = fixture(tmp.path());
+    let oracle = |_dir: &Path, entries: &[ListedEntry<'_>]| -> Vec<usize> {
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.name == "node_modules")
+            .map(|(i, _)| i)
+            .collect()
+    };
+    for backend in [ScanBackend::Native, ScanBackend::Portable] {
+        let full = run(&root, backend, &NoPrune);
+        let options = ScanOptions::new(&root)
+            .with_backend(backend)
+            .with_exclude(vec!["skip".to_owned()]);
+        let progress = ScanProgress::new();
+        let shallow = scan_shallow(&root, &options, &oracle, &progress).unwrap();
+        let tree = &shallow.tree;
+        assert_eq!(
+            tree.children(NodeId::ROOT).count(),
+            full.tree.children(NodeId::ROOT).count()
+        );
+        for child in tree.children(NodeId::ROOT) {
+            assert!(!tree.has_children(child), "{:?}", tree.name(child));
+        }
+        let src = tree.find(Path::new("src")).unwrap();
+        let src_full = full.tree.find(Path::new("src")).unwrap();
+        assert_eq!(
+            tree.info(src).own_apparent,
+            full.tree.info(src_full).own_apparent
+        );
+        let big = tree.find(Path::new("big.bin")).unwrap();
+        assert_eq!(tree.info(big).own_apparent, 300_000);
+        let nm = tree.find(Path::new("node_modules")).unwrap();
+        assert!(tree.flags(nm).contains(NodeFlags::SUMMARIZED));
+        let skip = tree.find(Path::new("skip")).unwrap();
+        assert!(tree.flags(skip).contains(NodeFlags::EXCLUDED));
+        // Only the one directory was read.
+        assert_eq!(shallow.stats.dirs, 1);
     }
 }
 

@@ -42,6 +42,7 @@ mod ffi {
     pub const kFSEventStreamCreateFlagNoDefer: u32 = 0x0000_0002;
     pub const kFSEventStreamCreateFlagWatchRoot: u32 = 0x0000_0004;
 
+    pub const kFSEventStreamEventFlagMustScanSubDirs: u32 = 0x0000_0001;
     pub const kFSEventStreamEventFlagUserDropped: u32 = 0x0000_0002;
     pub const kFSEventStreamEventFlagKernelDropped: u32 = 0x0000_0004;
     pub const kFSEventStreamEventFlagHistoryDone: u32 = 0x0000_0010;
@@ -431,12 +432,16 @@ extern "C" fn callback(
             != 0
         {
             RawEvent::RescanAll
-        } else if flag & ffi::kFSEventStreamEventFlagRootChanged != 0 {
-            // The root itself was moved, deleted, or recreated.
+        } else if flag
+            & (ffi::kFSEventStreamEventFlagRootChanged
+                | ffi::kFSEventStreamEventFlagMustScanSubDirs)
+            != 0
+        {
+            // The root itself was moved, deleted, or recreated, or FSEvents coalesced changes
+            // below this directory: the whole subtree must be reconciled.
             RawEvent::Rescan(path)
         } else {
-            // Plain directory-level events and `MustScanSubDirs` both mean "reconcile this
-            // subtree"; dirty paths already carry subtree semantics.
+            // A plain directory-level event: entries of this directory changed.
             RawEvent::Dirty(path)
         };
         let _ = state.tx.send(ev);

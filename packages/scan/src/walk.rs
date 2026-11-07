@@ -118,6 +118,9 @@ pub struct WalkParams<'a> {
     pub excluder: &'a Excluder,
     pub oracle: &'a dyn PruneOracle,
     pub progress: &'a ScanProgress,
+    /// `false` lists only the root: its subdirectories become leaves (summarized picks keep
+    /// the flag with their own sizes only).
+    pub descend: bool,
 }
 
 struct Shared<'a> {
@@ -127,6 +130,7 @@ struct Shared<'a> {
     one_filesystem: bool,
     root_dev: u64,
     backend: ScanBackend,
+    descend: bool,
     injector: Injector<Job>,
     stealers: Vec<Stealer<Job>>,
     pending: AtomicUsize,
@@ -178,6 +182,7 @@ pub fn walk(params: WalkParams<'_>) -> Result<(Tree, Vec<ScanIssue>), ScanError>
         one_filesystem: params.one_filesystem,
         root_dev: params.root_stat.dev,
         backend: params.backend,
+        descend: params.descend,
         injector: Injector::new(),
         stealers: workers.iter().map(Worker::stealer).collect(),
         pending: AtomicUsize::new(1),
@@ -469,6 +474,14 @@ impl Shared<'_> {
         let (files, bytes, entry_errors) = self.classify(path, &mut listing, &mut subdirs);
         errors += entry_errors;
         let picks = self.oracle_picks(path, &listing, &subdirs);
+        if !self.descend {
+            for &i in &picks {
+                if let Some(e) = listing.entries.get_mut(i) {
+                    e.flags = e.flags.union(NodeFlags::SUMMARIZED);
+                }
+            }
+            subdirs.clear();
+        }
 
         let materialized = subdirs.len()
             - picks

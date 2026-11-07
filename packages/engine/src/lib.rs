@@ -25,10 +25,10 @@
 mod refresh;
 mod select;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bclean_actions::{
     CancelToken, Candidate, ExecutionReport, Executor, ExecutorOptions, ItemOutcome, ItemResult,
@@ -54,7 +54,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
-pub use refresh::{Refresh, RulesOracle};
+pub use refresh::{Refresh, RefreshMode, RulesOracle};
 pub use select::{Selection, SortOrder, sort_items};
 
 /// Lookback used when prefetching volume samples for policy evaluation.
@@ -277,6 +277,12 @@ struct RootState {
     cursor: Option<Vec<u8>>,
     backend: String,
     progress: Option<Arc<ScanProgress>>,
+    /// When the in-memory tree first diverged from the persisted snapshot.
+    unsaved_since: Option<Instant>,
+    /// Last re-measurement of each recently refreshed summarized directory.
+    summary_refreshed: BTreeMap<PathBuf, Instant>,
+    /// Summarized directories with changes whose re-measurement was postponed.
+    deferred_summaries: BTreeSet<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -520,6 +526,27 @@ impl Engine {
         })
     }
 
+    /// Snapshot reference for a loaded root whose file is current: pending incremental changes
+    /// are saved first. Use it whenever the reference is handed to a reader of the file (IPC
+    /// clients); in-process users should read [`Engine::tree`] instead.
+    ///
+    /// # Errors
+    ///
+    /// * [`EngineError::NotFound`] if `root` has no snapshot
+    /// * [`EngineError::Store`] if the snapshot cannot be written
+    pub async fn saved_snapshot_ref(&self, root: &Path) -> Result<SnapshotRef> {
+        let slot = self.inner.roots.lock().get(root).cloned();
+        if let Some(slot) = slot
+            && slot.state.read().unsaved_since.is_some()
+        {
+            let _op = slot.op.lock().await;
+            if slot.state.read().unsaved_since.is_some() {
+                self.persist(&slot).await?;
+            }
+        }
+        self.require_ref(root)
+    }
+
     fn require_ref(&self, root: &Path) -> Result<SnapshotRef> {
         self.snapshot_ref(root)
             .ok_or_else(|| EngineError::NotFound(format!("no snapshot for {}", root.display())))
@@ -612,6 +639,7 @@ impl Engine {
             state.generation += 1;
             state.scanned_at = Some(now);
             state.cursor = cursor;
+            state.deferred_summaries.clear();
             state.backend = format!("{:?}", outcome.backend).to_uppercase();
         }
         self.persist(slot).await?;
@@ -651,18 +679,80 @@ impl Engine {
         };
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || inner.store.save_snapshot(&tree, &meta)).await??;
+        slot.state.write().unsaved_since = None;
         Ok(())
     }
 
-    /// Persists every loaded root (for example at shutdown).
+    /// Persists every root with unsaved changes (for example at shutdown).
     ///
     /// # Errors
     ///
     /// * [`EngineError::Store`] if a snapshot cannot be written
     pub async fn persist_all(&self) -> Result<()> {
+        self.persist_unsaved(Duration::ZERO).await
+    }
+
+    /// Persists every root whose changes have been unsaved for at least `max_age`.
+    ///
+    /// # Errors
+    ///
+    /// * [`EngineError::Store`] if a snapshot cannot be written
+    pub async fn persist_unsaved(&self, max_age: Duration) -> Result<()> {
         for slot in self.slots() {
+            let due = |slot: &RootSlot| {
+                slot.state
+                    .read()
+                    .unsaved_since
+                    .is_some_and(|since| since.elapsed() >= max_age)
+            };
+            if !due(&slot) {
+                continue;
+            }
             let _op = slot.op.lock().await;
-            self.persist(&slot).await?;
+            if due(&slot) {
+                self.persist(&slot).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-measures postponed summarized directories whose
+    /// `monitor.summary_refresh_interval` has elapsed.
+    ///
+    /// # Errors
+    ///
+    /// * [`EngineError::Scan`] on scan failures
+    pub async fn refresh_deferred(&self) -> Result<()> {
+        let interval = self
+            .settings()
+            .config()
+            .monitor
+            .summary_refresh_interval
+            .duration();
+        for slot in self.slots() {
+            let due: Vec<PathBuf> = {
+                let state = slot.state.read();
+                state
+                    .deferred_summaries
+                    .iter()
+                    .filter(|p| {
+                        state
+                            .summary_refreshed
+                            .get(*p)
+                            .is_none_or(|t| t.elapsed() >= interval)
+                    })
+                    .cloned()
+                    .collect()
+            };
+            if due.is_empty() {
+                continue;
+            }
+            let _op = slot.op.lock().await;
+            if slot.state.read().tree.is_none() {
+                continue;
+            }
+            self.refresh_locked(&slot, due, RefreshMode::Shallow)
+                .await?;
         }
         Ok(())
     }
@@ -813,35 +903,59 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("{} is not indexed", path.display())))?;
         let slot = self.slot(&root);
         let _op = slot.op.lock().await;
-        self.refresh_locked(&slot, vec![path], expand).await
+        self.refresh_locked(&slot, vec![path], RefreshMode::Deep { expand })
+            .await
     }
 
-    /// Rescans dirty directories (grouped by root), grafts them, re-classifies affected
-    /// subtrees, bumps generations, persists, and publishes `TREE_UPDATED`. Paths outside
-    /// every loaded root are ignored.
+    /// Reconciles directories whose own entries changed (grouped by root): each is re-listed,
+    /// new entries are scanned, removed ones dropped, and affected entries re-classified, then
+    /// `TREE_UPDATED` is published. Unchanged subtrees are never read. Paths outside every
+    /// loaded root, and bclean's own data, cache, and runtime directories, are ignored.
+    ///
+    /// The snapshot is saved later (see [`Engine::persist_unsaved`]).
     ///
     /// # Errors
     ///
-    /// * [`EngineError::Scan`] / [`EngineError::Store`] on scan or persistence failures
+    /// * [`EngineError::Scan`] on scan failures
     pub async fn apply_dirty(&self, dirs: Vec<PathBuf>) -> Result<()> {
+        self.apply_dirs(dirs, RefreshMode::Shallow).await
+    }
+
+    async fn apply_dirs(&self, dirs: Vec<PathBuf>, mode: RefreshMode) -> Result<()> {
         let mut by_root: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
         for dir in dirs {
+            if self.is_own_path(&dir) {
+                continue;
+            }
             if let Some(root) = self.root_for(&dir) {
                 by_root.entry(root).or_default().push(dir);
             }
         }
-        for (root, dirs) in by_root {
+        for (root, mut dirs) in by_root {
+            dirs.sort();
+            dirs.dedup();
             let slot = self.slot(&root);
             let _op = slot.op.lock().await;
             if slot.state.read().tree.is_none() {
                 continue;
             }
-            self.refresh_locked(&slot, dirs, false).await?;
+            self.refresh_locked(&slot, dirs, mode).await?;
         }
         Ok(())
     }
 
-    /// Applies a change-source batch: updates the watch cursor and rescans dirty directories.
+    /// `true` for paths inside bclean's own data, cache, or runtime directories, whose
+    /// churn (snapshot writes, databases, the socket) must never feed back into the index.
+    fn is_own_path(&self, path: &Path) -> bool {
+        let dirs = &self.inner.dirs;
+        [&self.inner.data_dir, &dirs.data, &dirs.cache, &dirs.runtime]
+            .into_iter()
+            .any(|own| path.starts_with(own))
+    }
+
+    /// Applies a change-source batch: updates the watch cursor, then reconciles the batch's
+    /// directories (shallowly, or as complete subtree rescans when
+    /// [`ChangeBatch::must_full_rescan`] is set).
     ///
     /// # Errors
     ///
@@ -853,27 +967,43 @@ impl Engine {
                 slot.state.write().cursor = Some(bytes.clone());
             }
         }
-        log::debug!(
-            "applying change batch: {} dirs (full={})",
-            batch.dirty.len(),
-            batch.must_full_rescan
-        );
-        self.apply_dirty(batch.dirty).await
+        let mode = if batch.must_full_rescan {
+            log::info!(
+                "change history incomplete; rescanning {} subtree(s): {:?}",
+                batch.dirty.len(),
+                batch.dirty.iter().take(5).collect::<Vec<_>>()
+            );
+            RefreshMode::Deep { expand: false }
+        } else {
+            log::debug!("applying change batch: {} dirs", batch.dirty.len());
+            RefreshMode::Shallow
+        };
+        self.apply_dirs(batch.dirty, mode).await
     }
 
     async fn refresh_locked(
         &self,
         slot: &Arc<RootSlot>,
         dirs: Vec<PathBuf>,
-        expand: bool,
+        mode: RefreshMode,
     ) -> Result<(SnapshotRef, Option<Arc<Tree>>)> {
         let settings = self.settings();
         let Some(tree) = slot.state.write().tree.take() else {
             return Ok((self.full_scan_locked(slot, None).await?.snapshot, None));
         };
-        let mut classes = slot.state.read().classes.clone();
+        let interval = settings
+            .config()
+            .monitor
+            .summary_refresh_interval
+            .duration();
+        let (mut classes, last_refreshed) = {
+            let state = slot.state.read();
+            (state.classes.clone(), state.summary_refreshed.clone())
+        };
         let (options, oracle) = Self::scan_options(&settings, &slot.root);
         let rules = Arc::clone(&settings.rules);
+        let started = Instant::now();
+        let dirs_count = dirs.len();
         let joined = tokio::task::spawn_blocking(move || {
             let mut tree = Arc::unwrap_or_clone(tree);
             let progress = ScanProgress::new();
@@ -882,14 +1012,25 @@ impl Engine {
                 oracle: &oracle,
                 progress: &progress,
             };
-            let result = refresh::refresh_dirs(&mut tree, &dirs, expand, &ctx);
+            let now = Instant::now();
+            let mut refreshed = Vec::new();
+            let mut allow = |path: &Path| {
+                let due = last_refreshed
+                    .get(path)
+                    .is_none_or(|t| now.duration_since(*t) >= interval);
+                if due {
+                    refreshed.push(path.to_path_buf());
+                }
+                due
+            };
+            let result = refresh::refresh_dirs(&mut tree, &dirs, mode, &ctx, &mut allow);
             if let Ok(Refresh::Partial { affected, .. }) = &result {
                 refresh::reclassify(&rules, &tree, &mut classes, affected);
             }
-            (tree, classes, result)
+            (tree, classes, result, refreshed, progress.snapshot().dirs)
         })
         .await;
-        let (tree, classes, result) = match joined {
+        let (tree, classes, result, refreshed, dirs_read) = match joined {
             Ok(v) => v,
             Err(e) => {
                 // The tree was lost with the panicked task: rebuild it from scratch.
@@ -898,19 +1039,48 @@ impl Engine {
             }
         };
         slot.state.write().tree = Some(Arc::new(tree));
-        let subtree = match result? {
+        let (affected, subtree, deferred) = match result? {
             Refresh::Full => {
+                log::info!("{} changed at its root; rescanning it", slot.root.display());
                 return Ok((self.full_scan_locked(slot, None).await?.snapshot, None));
             }
-            Refresh::Partial { subtree, .. } => subtree.map(|t| Arc::new(*t)),
+            Refresh::Partial {
+                affected,
+                subtree,
+                deferred,
+            } => (affected, subtree.map(|t| Arc::new(*t)), deferred),
         };
+        log::debug!(
+            "refreshed {} dir(s) in {} in {:.2?} ({} dirs read, {} changed, {} deferred)",
+            dirs_count,
+            slot.root.display(),
+            started.elapsed(),
+            dirs_read,
+            affected.len(),
+            deferred.len()
+        );
+        let finished = Instant::now();
+        let changed = !affected.is_empty() || subtree.is_some();
         {
             let mut state = slot.state.write();
-            state.classes = classes;
-            state.generation += 1;
+            state
+                .summary_refreshed
+                .retain(|_, t| finished.duration_since(*t) < interval);
+            for path in refreshed {
+                state.deferred_summaries.remove(&path);
+                state.summary_refreshed.insert(path, finished);
+            }
+            state.deferred_summaries.extend(deferred);
+            if changed {
+                state.classes = classes;
+                state.generation += 1;
+                state.unsaved_since.get_or_insert(finished);
+            }
         }
-        self.persist(slot).await?;
         let snapshot = self.require_ref(&slot.root)?;
+        if !changed {
+            return Ok((snapshot, None));
+        }
         self.emit(Event::TreeUpdated(snapshot.clone()));
         Ok((snapshot, subtree))
     }

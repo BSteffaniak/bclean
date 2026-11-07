@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use bclean_actions::{CancelToken, Plan};
 use bclean_engine::{Engine, EngineError, Settings};
-use bclean_protocol::{ClassifiedPath, Endpoint, RemoteError, Request, Response, SnapshotRef};
+use bclean_protocol::{
+    ClassifiedPath, Endpoint, Event, RemoteError, Request, Response, SnapshotRef,
+};
 use bclean_watch::ChangeBatch;
 use tokio::sync::{mpsc, watch};
 
@@ -91,18 +93,22 @@ pub async fn handle(
             }
             Response::Ok
         }
+        // Clients read the snapshot file a reference points to, so every reference handed out
+        // here is saved first.
         Request::Scan { root, force, wait } => {
             if wait {
-                Response::Snapshot(engine.ensure_scanned(&root, force).await?)
+                let scanned = engine.ensure_scanned(&root, force).await?;
+                Response::Snapshot(engine.saved_snapshot_ref(&scanned.root).await?)
             } else {
-                let current = engine
-                    .root_for(&root)
-                    .and_then(|r| engine.snapshot_ref(&r))
-                    .unwrap_or_else(|| SnapshotRef {
-                        path: engine.snapshot_path(&root),
-                        root: root.clone(),
-                        generation: 0,
-                    });
+                let current = match engine.root_for(&root) {
+                    Some(r) => engine.saved_snapshot_ref(&r).await.ok(),
+                    None => None,
+                };
+                let current = current.unwrap_or_else(|| SnapshotRef {
+                    path: engine.snapshot_path(&root),
+                    root: root.clone(),
+                    generation: 0,
+                });
                 let background = engine.clone();
                 tokio::spawn(async move {
                     if let Err(e) = background.ensure_scanned(&root, force).await {
@@ -112,16 +118,15 @@ pub async fn handle(
                 Response::Snapshot(current)
             }
         }
-        Request::Snapshot { root } => Response::Snapshot(
-            engine
-                .root_for(&root)
-                .and_then(|r| engine.snapshot_ref(&r))
-                .ok_or_else(|| {
-                    EngineError::NotFound(format!("{} is not indexed", root.display()))
-                })?,
-        ),
+        Request::Snapshot { root } => {
+            let root = engine.root_for(&root).ok_or_else(|| {
+                EngineError::NotFound(format!("{} is not indexed", root.display()))
+            })?;
+            Response::Snapshot(engine.saved_snapshot_ref(&root).await?)
+        }
         Request::Rescan { path, expand } => {
-            Response::Snapshot(engine.rescan(&path, expand).await?.0)
+            let (rescanned, _) = engine.rescan(&path, expand).await?;
+            Response::Snapshot(engine.saved_snapshot_ref(&rescanned.root).await?)
         }
         Request::Classifications { root } => Response::Classifications {
             items: engine.classifications(&root, false).await?,
@@ -180,19 +185,7 @@ pub async fn handle(
 pub async fn run_daemon(engine: Engine, endpoint: Endpoint, version: &str) -> std::io::Result<()> {
     let handler = Arc::new(DaemonHandler::new(engine.clone(), version));
     let server = Arc::new(Server::new(handler, version));
-    let sender = server.events();
-    let mut events = engine.subscribe();
-    let forward = tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(event) => {
-                    let _ = sender.send(event);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
+    let forward = tokio::spawn(forward_events(engine.clone(), server.events()));
     let shutdown = server.shutdown_handle();
     let monitor = tokio::spawn(run_monitor(engine.clone(), shutdown.subscribe()));
     let result = Arc::clone(&server).serve(&endpoint).await;
@@ -208,9 +201,12 @@ pub async fn run_daemon(engine: Engine, endpoint: Endpoint, version: &str) -> st
 ///
 /// 1. load each index root's snapshot (instant), then reconcile it: replay changes since the
 ///    persisted watch cursor when the backend supports it, else rescan
-/// 2. apply change-source batches incrementally
+/// 2. apply change-source batches incrementally (batches queued while one is applied are
+///    merged into a single update)
 /// 3. sample volumes every `monitor.poll_interval` and evaluate policies
 /// 4. record history rollups every `monitor.history_interval` (with retention)
+/// 5. every [`MAINTENANCE_INTERVAL`], re-measure postponed summarized directories and save
+///    snapshots whose changes are older than `monitor.persist_interval`
 ///
 /// Returns (after persisting every root) once `shutdown` becomes `true`.
 pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
@@ -227,6 +223,12 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
     let mut history =
         tokio::time::interval_at(tokio::time::Instant::now() + history_every, history_every);
     history.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let persist_after = monitor.persist_interval.duration();
+    let mut maintenance = tokio::time::interval_at(
+        tokio::time::Instant::now() + MAINTENANCE_INTERVAL,
+        MAINTENANCE_INTERVAL,
+    );
+    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut watching = true;
 
     loop {
@@ -238,12 +240,22 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
             }
             batch = batch_rx.recv(), if watching => match batch {
                 Some(batch) => {
-                    if let Err(e) = engine.apply_batch(batch).await {
-                        log::warn!("failed to apply change batch: {e}");
+                    for batch in merge_queued(batch, &mut batch_rx) {
+                        if let Err(e) = engine.apply_batch(batch).await {
+                            log::warn!("failed to apply change batch: {e}");
+                        }
                     }
                 }
                 None => watching = false,
             },
+            _ = maintenance.tick() => {
+                if let Err(e) = engine.refresh_deferred().await {
+                    log::warn!("failed to refresh postponed summaries: {e}");
+                }
+                if let Err(e) = engine.persist_unsaved(persist_after).await {
+                    log::warn!("failed to persist snapshots: {e}");
+                }
+            }
             _ = poll.tick() => match engine.sample_volumes().await {
                 Ok(volumes) => match engine.evaluate_policies(&volumes).await {
                     Ok(outcomes) => {
@@ -329,6 +341,92 @@ async fn start_indexing(
     });
 
     (batch_rx, initial)
+}
+
+/// Minimum time between two `TREE_UPDATED` events for one root sent to clients.
+pub const TREE_EVENT_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Forwards engine events to connected clients. A `TREE_UPDATED` reference is only useful
+/// once its snapshot file is current, so tree updates are dropped while nobody is subscribed
+/// and otherwise saved and sent at most once per [`TREE_EVENT_INTERVAL`] per root.
+async fn forward_events(engine: Engine, sender: tokio::sync::broadcast::Sender<Event>) {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut events = engine.subscribe();
+    let mut pending: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut flush = tokio::time::interval(TREE_EVENT_INTERVAL);
+    flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            event = events.recv() => match event {
+                Ok(Event::TreeUpdated(snapshot)) => {
+                    if sender.receiver_count() > 0 {
+                        pending.insert(snapshot.root);
+                    }
+                }
+                Ok(event) => {
+                    let _ = sender.send(event);
+                }
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            },
+            _ = flush.tick(), if !pending.is_empty() => {
+                for root in std::mem::take(&mut pending) {
+                    match engine.saved_snapshot_ref(&root).await {
+                        Ok(snapshot) => {
+                            let _ = sender.send(Event::TreeUpdated(snapshot));
+                        }
+                        Err(e) => log::warn!("cannot save snapshot of {}: {e}", root.display()),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// How often postponed work (summary re-measurements, snapshot saves) is checked.
+pub const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Drains batches queued behind `first` and merges them: at most one full-rescan batch, then
+/// one shallow batch carrying the newest cursor. Shallow paths inside a full-rescan subtree
+/// are dropped.
+fn merge_queued(
+    first: ChangeBatch,
+    rx: &mut mpsc::UnboundedReceiver<ChangeBatch>,
+) -> Vec<ChangeBatch> {
+    let mut deep: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut shallow: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut cursor = None;
+    let mut next = Some(first);
+    while let Some(batch) = next.take().or_else(|| rx.try_recv().ok()) {
+        if batch.must_full_rescan {
+            deep.extend(batch.dirty);
+        } else {
+            shallow.extend(batch.dirty);
+        }
+        if batch.cursor.is_some() {
+            cursor = batch.cursor;
+        }
+    }
+    let shallow: Vec<PathBuf> = shallow
+        .into_iter()
+        .filter(|p| !deep.iter().any(|d| p.starts_with(d)))
+        .collect();
+    let mut out = Vec::with_capacity(2);
+    if !deep.is_empty() {
+        out.push(ChangeBatch {
+            dirty: deep.into_iter().collect(),
+            must_full_rescan: true,
+            cursor: None,
+        });
+    }
+    if !shallow.is_empty() || cursor.is_some() {
+        out.push(ChangeBatch {
+            dirty: shallow,
+            must_full_rescan: false,
+            cursor,
+        });
+    }
+    out
 }
 
 fn forward_batches(

@@ -1,9 +1,10 @@
 //! Change sources: debounced batches of directories that need rescanning.
 //!
 //! A [`ChangeSource`] watches a set of roots with the best native backend and emits
-//! [`ChangeBatch`]es over a channel. Each batch lists directories whose subtree must be
-//! reconciled with the index (a consumer rescans each one, using directory mtimes to skip
-//! unchanged subdirectories unless [`ChangeBatch::must_full_rescan`] is set).
+//! [`ChangeBatch`]es over a channel. A normal batch lists directories whose *own entries*
+//! changed (a consumer re-lists each one and only scans entries that are new); a batch with
+//! [`ChangeBatch::must_full_rescan`] lists subtrees whose history is incomplete and must be
+//! rescanned completely.
 //!
 //! | Platform | Backend | Replays downtime? |
 //! |----------|---------|-------------------|
@@ -97,14 +98,18 @@ impl WatchCursor {
     }
 }
 
-/// A batch of directories to rescan.
+/// A batch of directories to reconcile.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChangeBatch {
-    /// Directories whose subtrees changed, collapsed so no entry is inside another and the list
-    /// stays below [`WatchConfig::collapse_threshold`] where possible.
+    /// Without [`ChangeBatch::must_full_rescan`]: directories whose direct entries changed
+    /// (sorted, deduplicated; a directory and its descendants may both be listed). Each needs
+    /// only a shallow re-listing.
+    ///
+    /// With it: subtrees to rescan completely, collapsed so no entry is inside another and the
+    /// list stays below [`WatchConfig::collapse_threshold`] where possible.
     pub dirty: Vec<PathBuf>,
     /// The event history for `dirty` is incomplete (dropped events, queue overflow, root moved,
-    /// unusable cursor): rescan those paths fully, without trusting directory mtimes.
+    /// coalesced subdirectory events, unusable cursor): rescan those subtrees completely.
     pub must_full_rescan: bool,
     /// Cursor covering everything up to and including this batch. Persist it only after the
     /// batch has been applied to the index.
@@ -122,7 +127,9 @@ pub struct WatchConfig {
     pub debounce: Duration,
     /// Upper bound on how long events are held back while changes keep arriving.
     pub max_latency: Duration,
-    /// Collapse dirty directories to common ancestors while a batch has more entries than this.
+    /// Collapse full-rescan subtrees to common ancestors while a batch has more entries than
+    /// this. Shallow dirty directories are never collapsed: lifting one to an ancestor would
+    /// turn a cheap re-listing into a subtree rescan.
     pub collapse_threshold: usize,
     /// Prefer privileged native backends (fanotify) over `notify` where both exist.
     pub prefer_native: bool,
@@ -262,7 +269,7 @@ pub fn collapse_dirty(
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // not every backend produces every variant
 pub(crate) enum RawEvent {
-    /// The subtree at this path changed.
+    /// Direct entries of this directory changed (created, removed, renamed, or modified).
     Dirty(PathBuf),
     /// History for this path is incomplete.
     Rescan(PathBuf),
@@ -395,7 +402,6 @@ impl Pending {
             .into_iter()
             .filter(|d| !rescan.iter().any(|r| d.starts_with(r)))
             .collect();
-        let dirty = collapse_dirty(dirty, &originals, threshold);
         let mut cursor = self.cursor.take();
         if !rescan.is_empty() {
             let c = if dirty.is_empty() {
@@ -538,6 +544,7 @@ mod tests {
         let (tx, pipe) = spawn_coalescer(roots, &config).unwrap();
         tx.send(RawEvent::Dirty(p("/r/a/b"))).unwrap();
         tx.send(RawEvent::Dirty(p("/r/a"))).unwrap();
+        tx.send(RawEvent::Dirty(p("/r/a"))).unwrap();
         tx.send(RawEvent::Dirty(p("/elsewhere"))).unwrap();
         tx.send(RawEvent::Dirty(p("/r/c/d"))).unwrap();
         tx.send(RawEvent::Rescan(p("/r/c"))).unwrap();
@@ -560,7 +567,8 @@ mod tests {
         assert_eq!(
             second,
             ChangeBatch {
-                dirty: vec![p("/r/a")],
+                // Shallow: nested directories stay separate, never lifted.
+                dirty: vec![p("/r/a"), p("/r/a/b")],
                 must_full_rescan: false,
                 cursor: Some(cursor)
             }

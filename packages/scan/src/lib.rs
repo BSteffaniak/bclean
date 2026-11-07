@@ -142,6 +142,15 @@ pub fn scan(
     oracle: &dyn PruneOracle,
     progress: &ScanProgress,
 ) -> Result<ScanOutcome, ScanError> {
+    scan_impl(options, oracle, progress, true)
+}
+
+fn scan_impl(
+    options: &ScanOptions,
+    oracle: &dyn PruneOracle,
+    progress: &ScanProgress,
+    descend: bool,
+) -> Result<ScanOutcome, ScanError> {
     let start = Instant::now();
     let before = progress.snapshot();
     let root_err = |source| ScanError::Root {
@@ -161,6 +170,7 @@ pub fn scan(
         excluder: &excluder,
         oracle,
         progress,
+        descend,
     })?;
     let after = progress.snapshot();
     Ok(ScanOutcome {
@@ -210,4 +220,32 @@ pub fn scan_subtree(
     progress: &ScanProgress,
 ) -> Result<ScanOutcome, ScanError> {
     scan(&options.with_root(dir), oracle, progress)
+}
+
+/// Lists `dir` alone: a tree of `dir` and its direct entries, without reading any
+/// subdirectory.
+///
+/// Excludes, filesystem boundaries and the `oracle` apply to the entries as in [`scan`], so
+/// flags match a full scan, but every subdirectory is a leaf carrying only its own (directory
+/// entry) sizes. Subdirectories the oracle would summarize are flagged
+/// [`bclean_tree::NodeFlags::SUMMARIZED`] without being measured. Hard-link deduplication
+/// only spans this one listing.
+///
+/// Used to reconcile a directory whose entries changed without rescanning its subtree.
+///
+/// # Errors
+///
+/// * Same as [`scan`]
+pub fn scan_shallow(
+    dir: &Path,
+    options: &ScanOptions,
+    oracle: &dyn PruneOracle,
+    progress: &ScanProgress,
+) -> Result<ScanOutcome, ScanError> {
+    scan_impl(
+        &options.with_root(dir).with_threads(Some(1)),
+        oracle,
+        progress,
+        false,
+    )
 }
