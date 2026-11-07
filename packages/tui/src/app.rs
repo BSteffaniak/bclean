@@ -438,6 +438,42 @@ impl<B: Backend> App<B> {
         let (cwd_path, selected_path) = self.capture_position();
         self.tree = Some(tree);
         self.on_tree_changed(cwd_path, selected_path);
+        self.resolve_expansions();
+    }
+
+    /// Settles expansions that a new tree completed. The daemon backend reports an expansion
+    /// only by publishing the updated tree (no [`BackendEvent::Expanded`]), so without this the
+    /// directory stayed "expanding…" forever and was never entered.
+    fn resolve_expansions(&mut self) {
+        let Some(tree) = self.tree.clone() else {
+            return;
+        };
+        let before = self.expanding.len();
+        self.expanding.retain(|path| {
+            tree.find(path).is_some_and(|id| {
+                tree.flags(id).contains(NodeFlags::SUMMARIZED) && !tree.has_children(id)
+            })
+        });
+        if self.expanding.len() == before {
+            return;
+        }
+        if self
+            .message
+            .as_ref()
+            .is_some_and(|(text, _)| text.starts_with("expanding "))
+        {
+            self.message = None;
+        }
+        if let Some(path) = self.enter_after_expand.take() {
+            if self.expanding.contains(&path) {
+                self.enter_after_expand = Some(path);
+            } else if let Some(id) = tree.find(&path)
+                && tree.kind(id) == EntryKind::Dir
+            {
+                self.filter.clear();
+                self.enter_dir(id);
+            }
+        }
     }
 
     fn capture_position(&mut self) -> (Option<PathBuf>, Option<PathBuf>) {

@@ -298,6 +298,46 @@ fn expands_summarized_directories() {
     );
 }
 
+/// The daemon backend reports a finished expansion only by publishing the updated tree.
+#[test]
+fn expansion_completes_from_a_tree_update() {
+    let summarized = || {
+        let mut meta =
+            EntryMeta::new(EntryKind::Dir, 1_000, 1_000, 0).with_flags(NodeFlags::SUMMARIZED);
+        meta.items = 3;
+        meta
+    };
+    let mut tree = sample_tree();
+    tree.add_child(NodeId::ROOT, OsStr::new("node_modules"), summarized());
+    let (mut app, mut rx) = setup(InMemoryBackend::new(tree));
+    assert_eq!(selected_name(&mut app), "node_modules");
+    app.handle_key(key(KeyCode::Enter));
+    // Drop the in-memory backend's reply (an error: it has no subtree for this path).
+    while rx.try_recv().is_some() {}
+    let text = render_to_text(&mut app, 120, 14).join("\n");
+    assert!(text.contains("expanding"), "{text}");
+
+    // An unrelated update leaves the expansion pending.
+    let mut unrelated = sample_tree();
+    unrelated.add_child(NodeId::ROOT, OsStr::new("node_modules"), summarized());
+    app.apply(BackendEvent::Tree(Arc::new(unrelated)));
+    assert_eq!(app.tree().unwrap().path(app.cwd()), Path::new("/r"));
+
+    // The daemon publishes the root's tree with node_modules materialized.
+    let mut expanded = sample_tree();
+    let nm = expanded.add_child_raw(NodeId::ROOT, OsStr::new("node_modules"), EntryMeta::dir());
+    expanded.add_child_raw(nm, OsStr::new("left-pad"), file(600, 1));
+    expanded.recompute_aggregates();
+    app.apply(BackendEvent::Tree(Arc::new(expanded)));
+    assert_eq!(
+        app.tree().unwrap().path(app.cwd()),
+        Path::new("/r/node_modules")
+    );
+    assert_eq!(selected_name(&mut app), "left-pad");
+    let text = render_to_text(&mut app, 120, 14).join("\n");
+    assert!(!text.contains("expanding"), "{text}");
+}
+
 #[test]
 fn new_trees_keep_position_and_defer_during_modals() {
     let (mut app, mut rx) = setup(backend());
