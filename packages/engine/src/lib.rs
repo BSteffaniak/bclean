@@ -907,8 +907,11 @@ impl Engine {
 
     // ----- incremental updates -----
 
-    /// Rescans one directory of a loaded root and grafts it (with `expand`, a summarized
-    /// directory is materialized). Returns the root's snapshot and the rescanned subtree.
+    /// Rescans one directory and grafts it (with `expand`, a summarized directory is
+    /// materialized) into every loaded root containing it, so a client browsing an outer root
+    /// (`/`) sees the result as well as the root that indexes the path (`~`). Outer roots
+    /// without a tree in memory are skipped. Returns the deepest root's snapshot and the
+    /// rescanned subtree.
     ///
     /// # Errors
     ///
@@ -920,13 +923,31 @@ impl Engine {
         expand: bool,
     ) -> Result<(SnapshotRef, Option<Arc<Tree>>)> {
         let path = absolute(path)?;
-        let root = self
-            .root_for(&path)
-            .ok_or_else(|| EngineError::NotFound(format!("{} is not indexed", path.display())))?;
-        let slot = self.slot(&root);
-        let _op = slot.op.lock().await;
-        self.refresh_locked(&slot, vec![path], RefreshMode::Deep { expand })
-            .await
+        let mut roots: Vec<PathBuf> = self
+            .roots()
+            .into_iter()
+            .filter(|root| path.starts_with(root))
+            .collect();
+        roots.sort_by_key(|root| std::cmp::Reverse(root.components().count()));
+        let Some(deepest) = roots.first().cloned() else {
+            return Err(EngineError::NotFound(format!(
+                "{} is not indexed",
+                path.display()
+            )));
+        };
+        let mut result = None;
+        for root in roots {
+            let slot = self.slot(&root);
+            let _op = slot.op.lock().await;
+            if root != deepest && slot.state.read().tree.is_none() {
+                continue;
+            }
+            let refreshed = self
+                .refresh_locked(&slot, vec![path.clone()], RefreshMode::Deep { expand })
+                .await?;
+            result.get_or_insert(refreshed);
+        }
+        result.ok_or_else(|| EngineError::NotFound(format!("{} is not indexed", path.display())))
     }
 
     /// Reconciles directories whose own entries changed (grouped by root): each is re-listed,

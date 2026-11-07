@@ -249,6 +249,43 @@ async fn lost_history_rescans_are_rate_limited() {
     assert_eq!(full_scans(), 4);
 }
 
+/// Expanding a directory indexed by nested roots (`/` and `~`) must reach the outer root's
+/// tree too: a client browsing `/` waits for that tree to change.
+#[tokio::test(flavor = "multi_thread")]
+async fn expand_updates_every_root_containing_the_path() {
+    let (_dir, root, engine) = setup("").await;
+    let inner = root.join("web");
+    engine.scan(&root).await.unwrap();
+    engine.scan(&inner).await.unwrap();
+    let nm = inner.join("node_modules");
+    let expanded = |r: &Path| {
+        let tree = engine.tree(r).unwrap();
+        let id = tree.find(&nm).unwrap();
+        tree.has_children(id)
+    };
+    assert!(!expanded(&root) && !expanded(&inner));
+
+    let mut events = engine.subscribe();
+    let (snapshot, subtree) = engine.rescan(&nm, true).await.unwrap();
+    assert_eq!(
+        snapshot.root, inner,
+        "the deepest root's result is returned"
+    );
+    assert!(subtree.is_some());
+    assert!(expanded(&inner));
+    assert!(expanded(&root), "the outer root was not updated");
+    let mut updated = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let bclean_protocol::Event::TreeUpdated(s) = event {
+            updated.push(s.root);
+        }
+    }
+    assert!(
+        updated.contains(&root) && updated.contains(&inner),
+        "{updated:?}"
+    );
+}
+
 /// bclean's own snapshot and database writes must never feed back into the index.
 #[tokio::test(flavor = "multi_thread")]
 async fn own_data_dir_churn_is_ignored() {
