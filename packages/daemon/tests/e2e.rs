@@ -298,7 +298,7 @@ async fn daemon_flows_through_the_client() {
         client.request(Request::Alerts).await.unwrap(),
         Response::Alerts { .. }
     ));
-    let Response::Snapshot(after) = client
+    let Response::Expanded { subtree } = client
         .request(Request::Rescan {
             path: fx.root.join("web/node_modules"),
             expand: true,
@@ -307,6 +307,27 @@ async fn daemon_flows_through_the_client() {
         .unwrap()
     else {
         panic!("rescan");
+    };
+    // The expanded directory comes alone in its own file.
+    assert_eq!(subtree.root, fx.root.join("web/node_modules"));
+    let alone = bclean_index::snapshot::read(&subtree.path, None)
+        .unwrap()
+        .tree;
+    assert!(
+        alone
+            .find(&fx.root.join("web/node_modules/left-pad"))
+            .is_some()
+    );
+    assert!(alone.len() < 10, "only the subtree: {} nodes", alone.len());
+    // The root's snapshot has it too.
+    let Response::Snapshot(after) = client
+        .request(Request::Snapshot {
+            root: fx.root.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("snapshot");
     };
     let tree = bclean_index::snapshot::read(&after.path, Some(&fx.root))
         .unwrap()

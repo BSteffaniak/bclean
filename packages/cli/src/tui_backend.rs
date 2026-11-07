@@ -616,10 +616,28 @@ impl Backend for DaemonBackend {
     }
 
     fn expand(&mut self, path: PathBuf) {
-        self.with_client("expand", move |mut client, _sink| async move {
-            client
-                .request(Request::Rescan { path, expand: true })
-                .await?;
+        self.with_client("expand", move |mut client, sink| async move {
+            // The reply carries the expanded directory on its own, so it is grafted right away;
+            // the root's TREE_UPDATED reload that follows only keeps the rest in sync.
+            if let Response::Expanded { subtree } = client
+                .request(Request::Rescan {
+                    path: path.clone(),
+                    expand: true,
+                })
+                .await?
+            {
+                let file = subtree.path.clone();
+                let tree = tokio::task::spawn_blocking(move || {
+                    let tree = bclean_index::snapshot::read(&file, None).map(|s| s.tree);
+                    let _ = std::fs::remove_file(&file);
+                    tree
+                })
+                .await??;
+                sink.send(BackendEvent::Expanded {
+                    path,
+                    subtree: Arc::new(tree),
+                });
+            }
             Ok(())
         });
     }

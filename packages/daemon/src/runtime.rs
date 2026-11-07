@@ -69,6 +69,30 @@ fn json<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, EngineError
     serde_json::to_value(value).map_err(|e| EngineError::Invalid(e.to_string()))
 }
 
+/// Rescans `path`. With `expand`, replies with the expanded directory in its own file as soon
+/// as it is grafted, without waiting for the root's snapshot to be saved.
+async fn rescan_reply(
+    engine: &Engine,
+    path: PathBuf,
+    expand: bool,
+) -> Result<Response, EngineError> {
+    let (rescanned, subtree) = engine.rescan(&path, expand).await?;
+    Ok(match subtree {
+        Some(subtree) if expand => {
+            let root = std::path::absolute(&path).unwrap_or(path);
+            let file = engine.write_subtree(subtree).await?;
+            Response::Expanded {
+                subtree: SnapshotRef {
+                    root,
+                    path: file,
+                    generation: rescanned.generation,
+                },
+            }
+        }
+        _ => Response::Snapshot(engine.saved_snapshot_ref(&rescanned.root).await?),
+    })
+}
+
 /// Maps one request onto the engine.
 ///
 /// # Errors
@@ -124,10 +148,7 @@ pub async fn handle(
             })?;
             Response::Snapshot(engine.saved_snapshot_ref(&root).await?)
         }
-        Request::Rescan { path, expand } => {
-            let (rescanned, _) = engine.rescan(&path, expand).await?;
-            Response::Snapshot(engine.saved_snapshot_ref(&rescanned.root).await?)
-        }
+        Request::Rescan { path, expand } => rescan_reply(engine, path, expand).await?,
         Request::Classifications { root } => Response::Classifications {
             items: engine.classifications(&root, false).await?,
         },

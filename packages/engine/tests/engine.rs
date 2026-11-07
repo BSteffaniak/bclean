@@ -273,17 +273,19 @@ async fn expand_updates_every_root_containing_the_path() {
     );
     assert!(subtree.is_some());
     assert!(expanded(&inner));
-    assert!(expanded(&root), "the outer root was not updated");
+    // The outer root catches up in the background and announces it.
     let mut updated = Vec::new();
-    while let Ok(event) = events.try_recv() {
+    while !updated.contains(&root) {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .expect("outer root never updated")
+            .unwrap();
         if let bclean_protocol::Event::TreeUpdated(s) = event {
             updated.push(s.root);
         }
     }
-    assert!(
-        updated.contains(&root) && updated.contains(&inner),
-        "{updated:?}"
-    );
+    assert!(updated.contains(&inner), "{updated:?}");
+    assert!(expanded(&root), "the outer root was not updated");
 }
 
 /// bclean's own snapshot and database writes must never feed back into the index.

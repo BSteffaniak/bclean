@@ -54,7 +54,9 @@ alarms, and can auto-clean).
 2. Work-stealing parallel traversal per directory; (dev, ino) hard-link dedupe only for
    `nlink > 1`; stays on one filesystem; allocated size by default.
 3. Rule-aware pruning: directories matching ephemeral rules are summarized (sizes only, no child
-   nodes) via the `PruneOracle` trait; expanded lazily on demand.
+   nodes) via the `PruneOracle` trait; expanded lazily on demand. The daemon answers an expand
+   with just that subtree (in its own file) as soon as it is scanned, before saving the root;
+   outer roots containing it (`/` around `~`) catch up in the background.
 4. Streaming progress so the UI is usable mid-scan.
 5. Benchmarks vs ncdu/gdu/dua (`scripts/bench.sh`).
 

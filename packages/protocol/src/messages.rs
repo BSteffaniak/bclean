@@ -296,8 +296,18 @@ pub enum Response {
         /// Active alerts.
         alerts: Vec<AlertEvent>,
     },
-    /// Reply to [`Request::Scan`], [`Request::Snapshot`], and [`Request::Rescan`].
+    /// Reply to [`Request::Scan`], [`Request::Snapshot`], and [`Request::Rescan`] without
+    /// `expand`.
     Snapshot(SnapshotRef),
+    /// Reply to [`Request::Rescan`] with `expand`: the expanded directory alone in its own
+    /// file, sent before the root's snapshot is saved, so a client can graft it right away
+    /// instead of reloading the whole root. The root's `TREE_UPDATED` follows. The client
+    /// deletes `subtree.path` once it has read it.
+    Expanded {
+        /// The expanded directory's subtree (`root` is the directory, `generation` the
+        /// containing root's).
+        subtree: SnapshotRef,
+    },
     /// Reply to [`Request::Classifications`].
     Classifications {
         /// Classified entries.

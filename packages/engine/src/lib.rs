@@ -279,6 +279,9 @@ pub struct PolicyOutcome {
     pub report: Option<ExecutionReport>,
 }
 
+/// Directory under the data dir for expanded subtrees handed to IPC clients.
+const EXPANDED_DIR: &str = "expanded";
+
 #[derive(Debug, Default)]
 struct RootState {
     tree: Option<Arc<Tree>>,
@@ -369,6 +372,8 @@ impl Engine {
             .clone()
             .unwrap_or_else(|| dirs.data.clone());
         std::fs::create_dir_all(&data_dir)?;
+        // Expanded-subtree files are only meaningful to the client they were written for.
+        let _ = std::fs::remove_dir_all(data_dir.join(EXPANDED_DIR));
         let store = Store::open(&data_dir).await?;
         let journal = Journal::open(data_dir.join("journal.sqlite3")).await?;
         let policy = PolicyEngine::new(settings.config().policies.clone())?;
@@ -908,10 +913,10 @@ impl Engine {
     // ----- incremental updates -----
 
     /// Rescans one directory and grafts it (with `expand`, a summarized directory is
-    /// materialized) into every loaded root containing it, so a client browsing an outer root
-    /// (`/`) sees the result as well as the root that indexes the path (`~`). Outer roots
-    /// without a tree in memory are skipped. Returns the deepest root's snapshot and the
-    /// rescanned subtree.
+    /// materialized) into the deepest loaded root containing it, and returns that root's
+    /// snapshot and the rescanned subtree. Outer roots containing it (`/` around `~`) are
+    /// updated in the background, each publishing `TREE_UPDATED`, so a client browsing them
+    /// stays in sync without the caller waiting; those without a tree in memory are skipped.
     ///
     /// # Errors
     ///
@@ -935,19 +940,34 @@ impl Engine {
                 path.display()
             )));
         };
-        let mut result = None;
-        for root in roots {
-            let slot = self.slot(&root);
+        let outer: Vec<PathBuf> = roots.into_iter().skip(1).collect();
+        let result = {
+            let slot = self.slot(&deepest);
             let _op = slot.op.lock().await;
-            if root != deepest && slot.state.read().tree.is_none() {
-                continue;
-            }
-            let refreshed = self
-                .refresh_locked(&slot, vec![path.clone()], RefreshMode::Deep { expand })
-                .await?;
-            result.get_or_insert(refreshed);
+            self.refresh_locked(&slot, vec![path.clone()], RefreshMode::Deep { expand })
+                .await?
+        };
+        if !outer.is_empty() {
+            let engine = self.clone();
+            tokio::spawn(async move {
+                for root in outer {
+                    let slot = engine.slot(&root);
+                    let _op = slot.op.lock().await;
+                    if slot.state.read().tree.is_none() {
+                        continue;
+                    }
+                    let mode = RefreshMode::Deep { expand };
+                    if let Err(e) = engine.refresh_locked(&slot, vec![path.clone()], mode).await {
+                        log::warn!(
+                            "rescan of {} in {} failed: {e}",
+                            path.display(),
+                            root.display()
+                        );
+                    }
+                }
+            });
         }
-        result.ok_or_else(|| EngineError::NotFound(format!("{} is not indexed", path.display())))
+        Ok(result)
     }
 
     /// Reconciles directories whose own entries changed (grouped by root): each is re-listed,
@@ -1445,6 +1465,33 @@ impl Engine {
             log::warn!("failed to refresh the index after undo: {e}");
         }
         Ok(record)
+    }
+
+    /// Writes `subtree` to a new file under `<data>/expanded/` for an IPC client to read (and
+    /// delete). Leftovers are removed when the engine opens.
+    ///
+    /// # Errors
+    ///
+    /// * [`EngineError::Store`] if the file cannot be written
+    /// * [`EngineError::Join`] if the writer panics
+    pub async fn write_subtree(&self, subtree: Arc<Tree>) -> Result<PathBuf> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = self.inner.data_dir.join(EXPANDED_DIR);
+        let path = dir.join(format!("{}-{n}.snap", std::process::id()));
+        let file = path.clone();
+        tokio::task::spawn_blocking(move || -> std::result::Result<(), StoreError> {
+            std::fs::create_dir_all(&dir)?;
+            let meta = SnapshotMeta {
+                scanned_at: unix_now(),
+                backend: String::new(),
+                cursor: None,
+            };
+            bclean_index::snapshot::write_tree(&file, &subtree, &meta)?;
+            Ok(())
+        })
+        .await??;
+        Ok(path)
     }
 
     /// Entries the index holds at `path` (itself included), if it is indexed.
