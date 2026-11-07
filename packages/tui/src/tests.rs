@@ -371,6 +371,45 @@ fn render_browser_snapshot() {
 }
 
 #[test]
+fn size_bars_are_scaled_to_the_whole_listing() {
+    let mut tree = Tree::new("/r", EntryMeta::dir());
+    tree.add_child_raw(NodeId::ROOT, OsStr::new("big"), file(1_000, 1));
+    for i in 0..20 {
+        tree.add_child_raw(
+            NodeId::ROOT,
+            OsStr::new(&format!("small{i:02}")),
+            file(10, 1),
+        );
+    }
+    tree.recompute_aggregates();
+    let (mut app, mut rx) = setup(InMemoryBackend::new(tree));
+    let screen = render_to_text(&mut app, 120, 12);
+    let text = screen.join("\n");
+    assert!(
+        screen[3].contains("big") && screen[3].contains("██████████"),
+        "{text}"
+    );
+
+    // Scrolled past `big`: 10 B rows are 1% of the largest entry, not full bars.
+    press(&mut app, &mut rx, &[key(KeyCode::End)]);
+    let screen = render_to_text(&mut app, 120, 12);
+    let text = screen.join("\n");
+    assert!(!text.contains("big"), "{text}");
+    let small: Vec<_> = screen
+        .iter()
+        .filter(|line| line.contains("small"))
+        .collect();
+    assert!(!small.is_empty(), "{text}");
+    // The bar column (not the scrollbar thumb at the right edge) is at most a sliver.
+    assert!(
+        small
+            .iter()
+            .all(|line| line.chars().take(40).all(|c| c != '█')),
+        "{text}"
+    );
+}
+
+#[test]
 fn render_modals_and_dashboard() {
     let (mut app, mut rx) = setup(dashboard_backend());
     press(&mut app, &mut rx, &[key(KeyCode::Space), ch('p')]);

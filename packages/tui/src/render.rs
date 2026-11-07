@@ -309,8 +309,9 @@ fn render_browser<B: Backend>(app: &mut App<B>, cx: &mut PaintCx<'_, '_>, body: 
         } else {
             tree.size(app.cwd, mode)
         };
-        let visible = app.rows.visible(listing.len(), app.viewport_rows);
-        let max = listing[visible]
+        // Bars are scaled to the largest entry in the whole listing, not just the rows on
+        // screen, so their lengths stay comparable while scrolling.
+        let max = listing
             .iter()
             .map(|id| tree.size(*id, mode))
             .max()
