@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bclean_model::{ActionSpec, AlertEvent, Classification, VolumeStats};
+use bclean_model::{ActionSpec, AlertEvent, Classification, DashboardSummary, VolumeStats};
 use bclean_tree::{NodeId, SizeMode, Tree};
 
 use crate::backend::{
@@ -25,6 +25,7 @@ pub struct InMemoryBackend {
     subtrees: BTreeMap<PathBuf, Arc<Tree>>,
     volumes: Vec<VolumeStats>,
     alerts: Vec<AlertEvent>,
+    dashboard: Option<DashboardSummary>,
     status: BackendStatus,
     item_delay: Duration,
     sink: Option<EventSink>,
@@ -71,6 +72,13 @@ impl InMemoryBackend {
     #[must_use]
     pub fn with_volumes(mut self, volumes: Vec<VolumeStats>) -> Self {
         self.volumes = volumes;
+        self
+    }
+
+    /// Sets the dashboard summary.
+    #[must_use]
+    pub fn with_dashboard(mut self, summary: DashboardSummary) -> Self {
+        self.dashboard = Some(summary);
         self
     }
 
@@ -231,6 +239,10 @@ impl Backend for InMemoryBackend {
     }
 
     fn refresh_dashboard(&mut self) {
+        self.log.push("refresh_dashboard".to_owned());
+        if let Some(summary) = &self.dashboard {
+            self.send(BackendEvent::Dashboard(Box::new(summary.clone())));
+        }
         self.send(BackendEvent::Status(self.status.clone()));
         self.send(BackendEvent::Volumes(self.volumes.clone()));
         self.send(BackendEvent::Alerts(self.alerts.clone()));

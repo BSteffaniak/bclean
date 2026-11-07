@@ -135,6 +135,14 @@ pub struct Classification {
 }
 
 impl Classification {
+    /// Worth offering for cleanup: ephemeral or stale, actionable (not `REPORT`), and scored.
+    #[must_use]
+    pub fn is_reclaimable(&self) -> bool {
+        (self.ephemeral.is_some() || self.staleness.stale)
+            && !matches!(self.action, ActionSpec::Report)
+            && self.score > 0.0
+    }
+
     /// Position in the ephemeral × stale matrix.
     #[must_use]
     pub const fn quadrant(&self) -> Quadrant {

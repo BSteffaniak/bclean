@@ -29,6 +29,32 @@ struct Plans {
     cancel: Option<CancelToken>,
 }
 
+/// Minimum time between dashboard summaries pushed to the UI.
+const DASHBOARD_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Runs `fetch` whenever `notify` fires, at most once per [`DASHBOARD_INTERVAL`]; nudges that
+/// arrive meanwhile are coalesced into one more fetch. Stops once the UI is gone.
+fn spawn_dashboard_refresher<F, Fut>(
+    handle: &Handle,
+    notify: Arc<tokio::sync::Notify>,
+    sink: EventSink,
+    fetch: F,
+) where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send,
+{
+    handle.spawn(async move {
+        loop {
+            notify.notified().await;
+            if sink.is_closed() {
+                break;
+            }
+            fetch().await;
+            tokio::time::sleep(DASHBOARD_INTERVAL).await;
+        }
+    });
+}
+
 fn apply_override(plan: &mut Plan, action: &ActionOverride) {
     if let ActionOverride::Force(spec) = action {
         for item in &mut plan.items {
@@ -179,6 +205,7 @@ pub struct LocalBackend {
     root: PathBuf,
     sink: Option<EventSink>,
     plans: Arc<Mutex<Plans>>,
+    dashboard: Arc<tokio::sync::Notify>,
 }
 
 impl LocalBackend {
@@ -191,11 +218,33 @@ impl LocalBackend {
             root,
             sink: None,
             plans: Arc::new(Mutex::new(Plans::default())),
+            dashboard: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     fn sink(&self) -> EventSink {
         self.sink.clone().expect("Backend::start is called first")
+    }
+
+    /// Starts the dashboard refresher: summaries over the index roots plus the browsed root,
+    /// re-computed when [`Self::dashboard`] is nudged.
+    fn spawn_dashboard(&self, sink: &EventSink) {
+        let (engine, root) = (self.engine.clone(), self.root.clone());
+        let fetch_sink = sink.clone();
+        spawn_dashboard_refresher(
+            &self.handle,
+            Arc::clone(&self.dashboard),
+            sink.clone(),
+            move || {
+                let (engine, sink, root) = (engine.clone(), fetch_sink.clone(), root.clone());
+                async move {
+                    match engine.dashboard(&[root]).await {
+                        Ok(summary) => sink.send(BackendEvent::Dashboard(Box::new(summary))),
+                        Err(e) => sink.send(BackendEvent::Error(format!("dashboard: {e}"))),
+                    };
+                }
+            },
+        );
     }
 }
 
@@ -222,10 +271,18 @@ impl Backend for LocalBackend {
         let listener_sink = sink.clone();
         let listener_engine = engine.clone();
         let listener_root = root.clone();
+        let dashboard = Arc::clone(&self.dashboard);
+        self.spawn_dashboard(&sink);
         self.handle.spawn(async move {
             while let Ok(event) = events.recv().await {
                 if listener_sink.is_closed() {
                     break;
+                }
+                if matches!(
+                    event,
+                    Event::TreeUpdated(_) | Event::Volumes { .. } | Event::Alert(_)
+                ) {
+                    dashboard.notify_one();
                 }
                 match event {
                     Event::ScanProgress { root, progress } if root == listener_root => {
@@ -379,6 +436,7 @@ impl Backend for LocalBackend {
     }
 
     fn refresh_dashboard(&mut self) {
+        self.dashboard.notify_one();
         let engine = self.engine.clone();
         let Some(sink) = self.sink.clone() else {
             return;
@@ -439,6 +497,7 @@ pub struct DaemonBackend {
     sink: Option<EventSink>,
     plans: Arc<Mutex<Plans>>,
     shared: Arc<Mutex<DaemonShared>>,
+    dashboard: Arc<tokio::sync::Notify>,
 }
 
 impl DaemonBackend {
@@ -460,11 +519,43 @@ impl DaemonBackend {
             sink: None,
             plans: Arc::new(Mutex::new(Plans::default())),
             shared: Arc::new(Mutex::new(DaemonShared::default())),
+            dashboard: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     fn sink(&self) -> EventSink {
         self.sink.clone().expect("Backend::start is called first")
+    }
+
+    /// Starts the dashboard refresher: summaries over the daemon's index roots plus the
+    /// browsed path, re-fetched when [`Self::dashboard`] is nudged.
+    fn spawn_dashboard(&self, sink: &EventSink) {
+        let (options, path) = (self.options.clone(), self.path.clone());
+        let fetch_sink = sink.clone();
+        spawn_dashboard_refresher(
+            &self.handle,
+            Arc::clone(&self.dashboard),
+            sink.clone(),
+            move || {
+                let (options, sink, path) = (options.clone(), fetch_sink.clone(), path.clone());
+                async move {
+                    let summary = async {
+                        let mut client = Client::connect(&options).await?;
+                        match client
+                            .request(Request::Dashboard { roots: vec![path] })
+                            .await?
+                        {
+                            Response::Dashboard(summary) => Ok(summary),
+                            other => Err(anyhow::anyhow!("unexpected response {other:?}")),
+                        }
+                    };
+                    match summary.await {
+                        Ok(summary) => sink.send(BackendEvent::Dashboard(summary)),
+                        Err(e) => sink.send(BackendEvent::Error(format!("dashboard: {e:#}"))),
+                    };
+                }
+            },
+        );
     }
 
     /// Runs `f` with a fresh client connection on the runtime, reporting errors to the UI.
@@ -533,6 +624,8 @@ impl Backend for DaemonBackend {
         let path = self.path.clone();
         let shared = Arc::clone(&self.shared);
         let options = self.options.clone();
+        let dashboard = Arc::clone(&self.dashboard);
+        self.spawn_dashboard(&sink);
         // Event subscription.
         let event_sink = sink;
         let event_path = path.clone();
@@ -552,6 +645,12 @@ impl Backend for DaemonBackend {
             while let Ok(Some(event)) = client.next_event().await {
                 if event_sink.is_closed() {
                     break;
+                }
+                if matches!(
+                    event,
+                    Event::TreeUpdated(_) | Event::Volumes { .. } | Event::Alert(_)
+                ) {
+                    dashboard.notify_one();
                 }
                 let tree_root = shared.lock().tree_root.clone();
                 match event {
@@ -750,6 +849,7 @@ impl Backend for DaemonBackend {
     }
 
     fn refresh_dashboard(&mut self) {
+        self.dashboard.notify_one();
         self.with_client("dashboard", |mut client, sink| async move {
             if let Response::Volumes { volumes } = client.request(Request::Volumes).await? {
                 sink.send(BackendEvent::Volumes(volumes));

@@ -5,7 +5,6 @@
 
 use std::cell::{Cell, RefCell};
 
-use bclean_model::Severity;
 use bclean_tree::{EntryKind, NodeFlags, NodeId, Tree};
 use bmux_tui::composition::TextBlock;
 use bmux_tui::geometry::{Insets, Rect, Size};
@@ -30,27 +29,27 @@ use crate::app::{App, ExecState, MessageLevel, Modal, View};
 use crate::backend::{ActionOverride, Backend, BackendMode, CleanPlan, ItemOutcome};
 use crate::format;
 use crate::listing::{Lens, SortBy};
-use crate::widgets::{UsageGauge, paint_component, paint_fixed_rows};
+use crate::widgets::{paint_component, paint_fixed_rows};
 
-const ACCENT: Color = Color::Cyan;
-const MUTED: Style = Style::new().fg(Color::BrightBlack);
-const SELECTED: Style = Style::new().bg(Color::Blue).fg(Color::BrightWhite);
+pub const ACCENT: Color = Color::Cyan;
+pub const MUTED: Style = Style::new().fg(Color::BrightBlack);
+pub const SELECTED: Style = Style::new().bg(Color::Blue).fg(Color::BrightWhite);
 /// Minimum terminal width at which the explain panel docks to the right instead of a modal.
 const DOCK_EXPLAIN_WIDTH: u16 = 120;
 
-const fn rect_local(rect: Rect) -> LocalRect {
+pub const fn rect_local(rect: Rect) -> LocalRect {
     LocalRect::terminal(rect)
 }
 
-fn write(cx: &mut PaintCx<'_, '_>, rect: Rect, line: &Line) {
+pub fn write(cx: &mut PaintCx<'_, '_>, rect: Rect, line: &Line) {
     cx.write_line(rect_local(rect), line);
 }
 
-fn styled(text: impl Into<String>, style: Style) -> Line {
+pub fn styled(text: impl Into<String>, style: Style) -> Line {
     Line::from_spans(vec![Span::styled(text.into(), style)])
 }
 
-const fn row(area: Rect, y: u16) -> Rect {
+pub const fn row(area: Rect, y: u16) -> Rect {
     Rect::new(area.x, area.y.saturating_add(y), area.width, 1)
 }
 
@@ -65,7 +64,7 @@ pub fn render<B: Backend>(app: &mut App<B>, cx: &mut PaintCx<'_, '_>) {
     let body = Rect::new(full.x, full.y + 2, full.width, full.height - 4);
     render_header(app, cx, row(full, 0), row(full, 1));
     match app.view {
-        View::Dashboard => render_dashboard(app, cx, body),
+        View::Dashboard => crate::dashboard::render(app, cx, body),
         View::Browser if app.tree.is_none() => render_progress(app, cx, body),
         View::Browser => render_browser(app, cx, body),
     }
@@ -109,6 +108,13 @@ fn render_header<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, top: Rect, 
             crumbs_area,
             &Line::from_spans(vec![
                 Span::styled(format!("{} ", app.lens.label()), Style::new().fg(ACCENT)),
+                Span::styled(
+                    app.lens_filter
+                        .as_ref()
+                        .map(|f| format!("· {} ", f.label()))
+                        .unwrap_or_default(),
+                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("across {}", tree.root_path().display()), MUTED),
             ]),
         ),
@@ -1012,7 +1018,7 @@ fn render_execution(exec: &ExecState, cx: &mut PaintCx<'_, '_>, full: Rect) {
 }
 
 fn help_lines() -> Vec<Line> {
-    let sections: [(&str, &[(&str, &str)]); 5] = [
+    let sections: [(&str, &[(&str, &str)]); 6] = [
         (
             "Navigate",
             &[
@@ -1035,7 +1041,8 @@ fn help_lines() -> Vec<Line> {
                 (".", "toggle hidden files"),
                 ("tab / 1-4", "lens: all, ephemeral, stale, reclaimable"),
                 ("i", "explain selected item"),
-                ("D", "dashboard (volumes, alerts, daemon)"),
+                ("D", "dashboard"),
+                ("esc", "clear a dashboard kind/ecosystem filter"),
                 ("r", "rescan current directory"),
             ],
         ),
@@ -1046,6 +1053,24 @@ fn help_lines() -> Vec<Line> {
                 ("x", "clear all marks"),
                 ("p", "plan for marked items (or the selected one)"),
                 ("d", "delete selected (plan preview first)"),
+            ],
+        ),
+        (
+            "Dashboard",
+            &[
+                ("tab / shift-tab", "next / previous panel"),
+                (
+                    "↑ ↓ / enter",
+                    "select / open in the browser (kinds open a lens)",
+                ),
+                (
+                    "space",
+                    "mark a candidate, or a project's reclaimable items",
+                ),
+                ("c", "clean everything safe (plan preview first)"),
+                ("p", "plan for marked items (or the selected row)"),
+                ("v / w", "group by kind or ecosystem / growth 24h or 7d"),
+                ("b / esc", "back to the browser"),
             ],
         ),
         (
@@ -1159,165 +1184,6 @@ fn render_progress<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, body: Rec
 }
 
 #[allow(clippy::too_many_lines)] // three sequential sections
-fn render_dashboard<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, body: Rect) {
-    let mut y = 0;
-    let heading = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
-    write(cx, row(body, y), &styled("Volumes", heading));
-    y += 1;
-    if app.volumes.is_empty() {
-        write(cx, row(body, y), &styled("  no volume data", MUTED));
-        y += 1;
-    }
-    let label_width = 28u16.min(body.width / 3);
-    for volume in &app.volumes {
-        if y + 2 >= body.height {
-            break;
-        }
-        let label = format!(
-            "  {} ({})",
-            truncate_to_display_width(&volume.mount_point, usize::from(label_width) - 8),
-            volume.fs_type
-        );
-        write(
-            cx,
-            Rect::new(body.x, body.y + y, label_width, 1),
-            &Line::raw(label),
-        );
-        let gauge = UsageGauge::new(volume.used(), volume.total);
-        let text = format!(
-            "{} / {} ({:.0}%)",
-            format::size(volume.used()),
-            format::size(volume.total),
-            gauge.fraction() * 100.0
-        );
-        let gauge_width = body.width.saturating_sub(label_width + 32).max(10);
-        gauge.paint(
-            &text,
-            Rect::new(body.x + label_width, body.y + y, gauge_width, 1),
-            cx,
-        );
-        let extra = format!(
-            "  avail {}{}",
-            format::size(volume.available),
-            volume
-                .purgeable
-                .map(|p| format!(" · purgeable {}", format::size(p)))
-                .unwrap_or_default()
-        );
-        let ex = body.x + label_width + gauge_width;
-        write(
-            cx,
-            Rect::new(ex, body.y + y, body.right().saturating_sub(ex), 1),
-            &styled(extra, MUTED),
-        );
-        y += 1;
-    }
-    y += 1;
-
-    if let Some(tree) = app.tree.as_deref() {
-        let mode = app.size_mode();
-        write(cx, row(body, y), &styled("Scan", heading));
-        y += 1;
-        let recl = app.classes.reclaimable_inside(NodeId::ROOT)
-            + app.classes.get(NodeId::ROOT).map_or(0, |c| c.size);
-        write(
-            cx,
-            row(body, y),
-            &Line::raw(format!(
-                "  {} · {} · {} items · {} classified · {} reclaimable",
-                tree.root_path().display(),
-                format::size(tree.size(NodeId::ROOT, mode)),
-                format::count(tree.info(NodeId::ROOT).items),
-                format::count(app.classes.len() as u64),
-                format::size(recl),
-            )),
-        );
-        y += 2;
-    }
-
-    write(
-        cx,
-        row(body, y),
-        &styled(format!("Alerts ({})", app.alerts.len()), heading),
-    );
-    y += 1;
-    if app.alerts.is_empty() {
-        write(cx, row(body, y), &styled("  no active alerts", MUTED));
-        y += 1;
-    }
-    for alert in &app.alerts {
-        if y + 1 >= body.height {
-            break;
-        }
-        let (tag, style) = match alert.severity {
-            Severity::Info => ("INFO", Style::new().fg(Color::Cyan)),
-            Severity::Warning => (
-                "WARN",
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ),
-            Severity::Critical => (
-                "CRIT",
-                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-        };
-        write(
-            cx,
-            row(body, y),
-            &Line::from_spans(vec![
-                Span::styled(format!("  {tag} "), style),
-                Span::styled(
-                    alert.title.clone(),
-                    Style::new().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  {}  {}", alert.body, format::datetime(alert.at)),
-                    MUTED,
-                ),
-            ]),
-        );
-        y += 1;
-    }
-    y += 1;
-    if y < body.height {
-        let line = app.status.as_ref().map_or_else(
-            || styled("Backend: unknown", MUTED),
-            |s| {
-                let (state, style) = if s.connected {
-                    ("connected", Style::new().fg(Color::Green))
-                } else {
-                    (
-                        "disconnected",
-                        Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    )
-                };
-                Line::from_spans(vec![
-                    Span::styled("Backend: ", heading),
-                    Span::raw(match s.mode {
-                        BackendMode::Local => "local ",
-                        BackendMode::Daemon => "daemon ",
-                    }),
-                    Span::styled(state, style),
-                    Span::styled(
-                        format!(
-                            "{}{}",
-                            s.version
-                                .as_ref()
-                                .map(|v| format!(" · v{v}"))
-                                .unwrap_or_default(),
-                            s.detail
-                                .as_ref()
-                                .map(|d| format!(" · {d}"))
-                                .unwrap_or_default()
-                        ),
-                        MUTED,
-                    ),
-                ])
-            },
-        );
-        write(cx, row(body, y), &line);
-    }
-}
-
 fn render_status<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, area: Rect) {
     let mode = app.size_mode();
     let left_text = app.tree.as_deref().map_or_else(String::new, |tree| {
@@ -1419,8 +1285,15 @@ fn render_hints<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, area: Rect) 
         KeyHint::new("q", "quit"),
     ];
     const DASHBOARD: &[KeyHint<'static>] = &[
-        KeyHint::new("r", "refresh"),
-        KeyHint::new("esc/D", "browser"),
+        KeyHint::new("tab", "panel"),
+        KeyHint::new("↑↓", "select"),
+        KeyHint::new("enter", "open"),
+        KeyHint::new("space", "mark"),
+        KeyHint::new("c", "clean safe"),
+        KeyHint::new("p", "plan"),
+        KeyHint::new("v", "kind/ecosystem"),
+        KeyHint::new("w", "24h/7d"),
+        KeyHint::new("b", "browser"),
         KeyHint::new("?", "help"),
         KeyHint::new("q", "quit"),
     ];

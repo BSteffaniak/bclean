@@ -18,13 +18,14 @@ cargo install --path packages/bclean
 ## Usage
 
 ```sh
-bclean [PATH]                     # interactive browser (auto-starts the daemon)
+bclean                            # dashboard: disk, reclaimable data, where it lives (auto-starts the daemon)
+bclean PATH                       # interactive browser at PATH
 bclean scan ~/code -n 20          # summary + largest entries
 bclean ls ~/code --stale -e       # cleanable items: ephemeral and stale, by score
 bclean explain ~/code/app/target  # why something is classified the way it is
 bclean clean ~/code --stale -n    # dry run; drop -n to act (asks for confirmation)
 bclean undo                       # undo the last reversible action
-bclean status                     # volumes, daemon, alerts
+bclean status                     # volumes, reclaimable summary, daemon, alerts
 bclean history --since 7d         # what grew
 bclean rules list                 # effective rules (139 built-ins + yours)
 bclean daemon start|stop|status|logs
@@ -57,7 +58,26 @@ notify = ["desktop"]
 kind = "DESKTOP"
 ```
 
-`bclean config show` prints the merged result.
+`bclean config show` prints the merged result. `[tui] start_view = "BROWSER"` makes plain
+`bclean` open the browser instead of the dashboard.
+
+## Dashboard
+
+Plain `bclean` opens a dashboard computed from the daemon's index (instant, no scan):
+
+- **Disk:** usage per volume, split into reclaimable data, the rest of the index, space outside
+  the index (system, apps, unindexed directories), and free space, with a 30-day trend and a
+  "full in ~N days" forecast.
+- **Reclaimable:** the total, how much is safe to clean right now (what an automatic clean
+  would select), and the ephemeral × stale breakdown. `c` plans a clean of everything safe.
+- **By kind / ecosystem** (`v`): build output, dependencies, caches, ... or rust, node, xcode,
+  ... Enter opens the Reclaimable lens filtered to that row.
+- **Top candidates** and **Projects**: where reclaimable data lives. Enter shows it in the
+  browser; space marks a candidate (or a project's reclaimable entries, never the project).
+- **Grew** (24h / 7d with `w`) and **Activity**: fastest-growing directories, space freed this
+  week, alerts, and watcher health.
+
+It updates live as the index and volume samples change.
 
 ## bmux
 

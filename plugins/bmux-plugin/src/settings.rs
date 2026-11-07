@@ -57,6 +57,8 @@ pub struct Settings {
     pub show_when_ok: bool,
     /// Show a dim indicator when the daemon is unreachable (otherwise render nothing).
     pub offline_indicator: bool,
+    /// Append the safe-to-clean amount (`♻ 61.2 GiB`) to the segment once it reaches 1 GiB.
+    pub show_reclaimable: bool,
     /// Mirror the segment to bmux's tab bar as a status item (when bmux allows it).
     pub tab_bar: bool,
     /// Raise a tab-bar toast for each new alert and queue it for the next `status` invocation.
@@ -90,6 +92,7 @@ impl Default for Settings {
             volumes: Vec::new(),
             show_when_ok: true,
             offline_indicator: true,
+            show_reclaimable: true,
             tab_bar: true,
             notify: true,
             open_program: "bclean".to_owned(),

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bclean_model::{ActionSpec, Classification};
+use bclean_model::{Classification, EphemeralKind};
 use bclean_tree::{NodeId, SizeMode, SortKey, Tree};
 
 /// Column the listing is sorted by.
@@ -157,9 +157,7 @@ impl Lens {
 /// Whether a classification describes something worth cleaning.
 #[must_use]
 pub fn is_reclaimable(class: &Classification) -> bool {
-    (class.ephemeral.is_some() || class.staleness.stale)
-        && !matches!(class.action, ActionSpec::Report)
-        && class.score > 0.0
+    class.is_reclaimable()
 }
 
 /// Classifications keyed by absolute path, with a node index for the current tree.
@@ -272,6 +270,37 @@ impl ClassStore {
     }
 }
 
+/// Restricts a flat lens to one ephemeral kind or rule category (a dashboard drill-down).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LensFilter {
+    /// Only this ephemeral kind (`None` = durable items).
+    Kind(Option<EphemeralKind>),
+    /// Only this rule category (`None` = uncategorized).
+    Category(Option<String>),
+}
+
+impl LensFilter {
+    /// Whether `class` passes the filter.
+    #[must_use]
+    pub fn matches(&self, class: &Classification) -> bool {
+        match self {
+            Self::Kind(kind) => class.ephemeral.as_ref().map(|e| e.kind) == *kind,
+            Self::Category(category) => class.category == *category,
+        }
+    }
+
+    /// Short label for headers.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Kind(kind) => bclean_model::kind_label(*kind).to_owned(),
+            Self::Category(category) => category
+                .clone()
+                .unwrap_or_else(|| "uncategorized".to_owned()),
+        }
+    }
+}
+
 /// Inputs that determine a listing.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ListingKey {
@@ -287,6 +316,8 @@ pub struct ListingKey {
     pub show_hidden: bool,
     /// Case-insensitive name filter.
     pub filter: String,
+    /// Kind/category restriction of flat lenses.
+    pub class_filter: Option<LensFilter>,
     /// Tree generation.
     pub tree_gen: u64,
     /// Classification generation (only relevant for score sort and flat lenses).
@@ -358,6 +389,11 @@ pub fn compute_listing(key: &ListingKey, tree: &Tree, classes: &ClassStore) -> V
         flat_lens(tree, classes, key.lens)
             .into_iter()
             .filter(|id| name_matches(tree, *id, &filter))
+            .filter(|id| {
+                key.class_filter
+                    .as_ref()
+                    .is_none_or(|f| classes.get(*id).is_some_and(|c| f.matches(c)))
+            })
             .collect()
     } else {
         if !tree.contains(key.dir) {
@@ -453,6 +489,7 @@ pub(crate) mod tests {
     use bclean_tree::{EntryKind, EntryMeta};
 
     use super::*;
+    use bclean_model::ActionSpec;
 
     pub fn file(size: u64, mtime: i64) -> EntryMeta {
         EntryMeta::new(EntryKind::File, size, size, mtime)
@@ -503,6 +540,7 @@ pub(crate) mod tests {
             apparent: false,
             show_hidden: false,
             filter: String::new(),
+            class_filter: None,
             tree_gen: 0,
             class_gen: 0,
         }

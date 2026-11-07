@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bclean_model::{ActionSpec, AlertEvent, Severity, VolumeStats};
+use bclean_model::{ActionSpec, AlertEvent, DashboardSummary, Severity, VolumeStats};
 use bclean_tree::{EntryKind, EntryMeta, NodeFlags, NodeId, Tree};
 use bmux_keyboard::{KeyCode, KeyStroke, Modifiers};
 
@@ -46,6 +46,16 @@ fn ch(c: char) -> KeyStroke {
         }
     } else {
         key(KeyCode::Char(c))
+    }
+}
+
+fn shift_tab() -> KeyStroke {
+    KeyStroke {
+        key: KeyCode::Tab,
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        },
     }
 }
 
@@ -391,6 +401,7 @@ fn dashboard_backend() -> InMemoryBackend {
     };
     backend()
         .with_volumes(vec![volume.clone()])
+        .with_dashboard(sample_summary(volume.clone()))
         .with_alerts(vec![AlertEvent {
             key: "k".into(),
             policy_id: None,
@@ -496,13 +507,322 @@ fn render_modals_and_dashboard() {
         "{text}"
     );
     press(&mut app, &mut rx, &[key(KeyCode::Escape), ch('D')]);
-    let text = render_to_text(&mut app, 100, 20).join("\n");
-    assert!(text.contains("Volumes") && text.contains("apfs"), "{text}");
-    assert!(text.contains("95%"), "{text}");
+    let text = render_to_text(&mut app, 120, 40).join("\n");
     assert!(
-        text.contains("CRIT") && text.contains("Disk almost full"),
+        text.contains("950.0 GiB / 1000.0 GiB") && text.contains("95%"),
         "{text}"
     );
+    assert!(text.contains("Disk almost full"), "{text}");
+}
+
+/// A summary over the sample tree: `/r/c/target` (build output, safe) and `/r/b` (stale).
+fn sample_summary(volume: VolumeStats) -> DashboardSummary {
+    use bclean_model::{
+        ActivitySummary, CategoryBucket, EphemeralKind, GrowthItem, KindBucket, ProjectSummary,
+        ReclaimSummary, VolumeSummary,
+    };
+    DashboardSummary {
+        generated_at: 1_700_000_000,
+        volumes: vec![VolumeSummary {
+            stats: volume,
+            indexed: 600 << 30,
+            reclaimable: 80 << 30,
+            trend: vec![900 << 30, 920 << 30, 950 << 30],
+            trend_span_secs: 30 * 86_400,
+            growth_per_day: Some(2 << 30),
+            full_in_secs: Some(25 * 86_400),
+        }],
+        roots: Vec::new(),
+        reclaimable: ReclaimSummary {
+            total: 800,
+            items: 2,
+            safe: 500,
+            safe_items: 1,
+            safe_paths: vec![PathBuf::from("/r/c/target")],
+            ephemeral_stale: 500,
+            ephemeral_fresh: 0,
+            durable_stale: 300,
+        },
+        by_kind: vec![
+            KindBucket {
+                kind: Some(EphemeralKind::BuildArtifact),
+                bytes: 500,
+                items: 1,
+                safe: 500,
+            },
+            KindBucket {
+                kind: None,
+                bytes: 300,
+                items: 1,
+                safe: 0,
+            },
+        ],
+        by_category: vec![CategoryBucket {
+            category: Some("rust".into()),
+            bytes: 800,
+            items: 2,
+            safe: 500,
+        }],
+        top_items: sample_items(),
+        projects: vec![ProjectSummary {
+            path: PathBuf::from("/r/c"),
+            bytes: 500,
+            items: 1,
+            entries: vec!["target".into()],
+            paths: vec![PathBuf::from("/r/c/target")],
+            last_activity: None,
+        }],
+        growth_day: vec![GrowthItem {
+            path: PathBuf::from("/r/a"),
+            from: 50,
+            to: 150,
+        }],
+        growth_week: vec![
+            GrowthItem {
+                path: PathBuf::from("/r/c"),
+                from: 0,
+                to: 500,
+            },
+            GrowthItem {
+                path: PathBuf::from("/r/a"),
+                from: 0,
+                to: 150,
+            },
+        ],
+        activity: ActivitySummary {
+            freed_week: 3 << 30,
+            actions_week: 2,
+            alerts: 1,
+            top_alert: Some("Disk almost full".into()),
+            full_scans: 1,
+            refreshes: 42,
+            watchers: vec!["FSEVENTS".into()],
+            ..ActivitySummary::default()
+        },
+    }
+}
+
+fn sample_items() -> Vec<bclean_model::DashboardItem> {
+    use bclean_model::{DashboardItem, EphemeralKind};
+    vec![
+        DashboardItem {
+            path: PathBuf::from("/r/c/target"),
+            size: 500,
+            category: Some("rust".into()),
+            kind: Some(EphemeralKind::BuildArtifact),
+            idle_secs: Some(86_400 * 3),
+            stale: true,
+            score: 9.0,
+            safe: true,
+        },
+        DashboardItem {
+            path: PathBuf::from("/r/b"),
+            size: 300,
+            category: None,
+            kind: None,
+            idle_secs: Some(86_400 * 40),
+            stale: true,
+            score: 3.0,
+            safe: false,
+        },
+    ]
+}
+
+fn dashboard_app() -> (TestApp, EventReceiver) {
+    let (mut app, mut rx) = setup(dashboard_backend());
+    press(&mut app, &mut rx, &[ch('D')]);
+    assert_eq!(app.view(), View::Dashboard);
+    (app, rx)
+}
+
+#[test]
+fn dashboard_renders_every_panel_at_any_width() {
+    let (mut app, _rx) = dashboard_app();
+    for (width, height) in [(200, 50), (120, 40), (80, 40)] {
+        let text = render_to_text(&mut app, width, height).join("\n");
+        for title in [
+            "Disk",
+            "Reclaimable",
+            "By kind",
+            "Top candidates",
+            "Projects",
+        ] {
+            assert!(text.contains(title), "{width}x{height}: no {title}\n{text}");
+        }
+        assert!(
+            text.contains("safe now") && text.contains("c clean"),
+            "{text}"
+        );
+        assert!(text.contains("build output"), "{text}");
+        assert!(text.contains("/r/c/target"), "{text}");
+        assert!(text.contains("full in ~"), "{text}");
+        assert!(
+            text.contains("reclaimable") && text.contains("outside index"),
+            "{text}"
+        );
+    }
+    let wide = render_to_text(&mut app, 200, 50).join("\n");
+    assert!(wide.contains("Grew") && wide.contains("Activity"), "{wide}");
+    assert!(
+        wide.contains("freed") && wide.contains("1 alert: Disk almost full"),
+        "{wide}"
+    );
+    // Tiny terminals degrade instead of panicking.
+    let _ = render_to_text(&mut app, 30, 10);
+}
+
+#[test]
+fn dashboard_waits_for_its_summary() {
+    let (mut app, mut rx) = setup(backend());
+    press(&mut app, &mut rx, &[ch('D')]);
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(text.contains("computing the dashboard"), "{text}");
+}
+
+#[test]
+fn dashboard_kinds_open_a_filtered_lens() {
+    let (mut app, mut rx) = dashboard_app();
+    // Build output → the Reclaimable lens with only build output.
+    press(&mut app, &mut rx, &[key(KeyCode::Enter)]);
+    assert_eq!(app.view(), View::Browser);
+    assert_eq!(app.lens(), Lens::Reclaimable);
+    assert_eq!(app.listing().len(), 1);
+    assert_eq!(selected_name(&mut app), "target");
+    let text = render_to_text(&mut app, 120, 14).join("\n");
+    assert!(text.contains("build output"), "{text}");
+    // Esc clears the filter.
+    press(&mut app, &mut rx, &[key(KeyCode::Escape)]);
+    assert_eq!(app.listing().len(), 2);
+
+    // The durable row filters to unused durable items.
+    press(
+        &mut app,
+        &mut rx,
+        &[ch('D'), key(KeyCode::Down), key(KeyCode::Enter)],
+    );
+    assert_eq!(app.listing().len(), 1);
+    assert_eq!(selected_name(&mut app), "b");
+    // Switching lenses drops the filter.
+    press(&mut app, &mut rx, &[ch('2'), ch('4')]);
+    assert_eq!(app.listing().len(), 2);
+
+    // Grouping by ecosystem.
+    press(&mut app, &mut rx, &[ch('D'), ch('v')]);
+    let text = render_to_text(&mut app, 120, 40).join("\n");
+    assert!(
+        text.contains("By ecosystem") && text.contains("rust"),
+        "{text}"
+    );
+}
+
+#[test]
+fn dashboard_rows_open_in_the_browser() {
+    let (mut app, mut rx) = dashboard_app();
+    // Biggest wins: shown at its location, selected.
+    press(&mut app, &mut rx, &[key(KeyCode::Tab), key(KeyCode::Enter)]);
+    assert_eq!(app.view(), View::Browser);
+    assert_eq!(app.tree().unwrap().path(app.cwd()), Path::new("/r/c"));
+    assert_eq!(selected_name(&mut app), "target");
+    // Projects: opened.
+    press(
+        &mut app,
+        &mut rx,
+        &[ch('D'), key(KeyCode::Tab), key(KeyCode::Enter)],
+    );
+    assert_eq!(app.tree().unwrap().path(app.cwd()), Path::new("/r/c"));
+    // Growth (24h, then 7d).
+    press(
+        &mut app,
+        &mut rx,
+        &[ch('D'), key(KeyCode::Tab), key(KeyCode::Enter)],
+    );
+    assert_eq!(app.tree().unwrap().path(app.cwd()), Path::new("/r/a"));
+    press(&mut app, &mut rx, &[ch('D'), ch('w'), key(KeyCode::Enter)]);
+    assert_eq!(app.tree().unwrap().path(app.cwd()), Path::new("/r/c"));
+}
+
+#[test]
+fn dashboard_marks_and_plans() {
+    let (mut app, mut rx) = dashboard_app();
+    // A project marks its reclaimable entries, never the project itself.
+    press(
+        &mut app,
+        &mut rx,
+        &[key(KeyCode::Tab), key(KeyCode::Tab), key(KeyCode::Space)],
+    );
+    assert_eq!(
+        app.marked().iter().collect::<Vec<_>>(),
+        [Path::new("/r/c/target")]
+    );
+    press(&mut app, &mut rx, &[key(KeyCode::Space)]);
+    assert!(app.marked().is_empty(), "space again unmarks");
+    // A candidate marks itself; p plans the marks.
+    press(
+        &mut app,
+        &mut rx,
+        &[
+            shift_tab(),
+            key(KeyCode::Down),
+            key(KeyCode::Space),
+            ch('p'),
+        ],
+    );
+    let Some(Modal::PlanPreview { plan, .. }) = app.modal().cloned() else {
+        panic!("expected a plan, got {:?}", app.modal());
+    };
+    assert_eq!(plan.items.len(), 1);
+    assert_eq!(plan.items[0].path, Path::new("/r/b"));
+    press(&mut app, &mut rx, &[key(KeyCode::Escape), ch('x')]);
+
+    // c plans everything safe.
+    press(&mut app, &mut rx, &[ch('c')]);
+    let Some(Modal::PlanPreview { plan, .. }) = app.modal().cloned() else {
+        panic!("expected a plan, got {:?}", app.modal());
+    };
+    assert_eq!(
+        plan.items
+            .iter()
+            .map(|i| i.path.clone())
+            .collect::<Vec<_>>(),
+        [PathBuf::from("/r/c/target")]
+    );
+}
+
+#[test]
+fn dashboard_reports_paths_outside_the_browsed_tree() {
+    let mut summary = sample_summary(VolumeStats {
+        mount_point: "/".into(),
+        fs_type: "apfs".into(),
+        total: 100,
+        free: 50,
+        available: 50,
+        purgeable: None,
+        at: 0,
+    });
+    summary.top_items[0].path = PathBuf::from("/elsewhere/cache");
+    let (mut app, mut rx) = setup(backend().with_dashboard(summary));
+    press(
+        &mut app,
+        &mut rx,
+        &[ch('D'), key(KeyCode::Tab), key(KeyCode::Enter)],
+    );
+    assert_eq!(app.view(), View::Dashboard);
+    let text = render_to_text(&mut app, 120, 40).join("\n");
+    assert!(text.contains("is outside"), "{text}");
+}
+
+#[test]
+fn starts_on_the_dashboard_and_opens_the_initial_directory() {
+    let (sink, mut rx) = EventSink::channel();
+    let options = TuiOptions {
+        start_on_dashboard: true,
+        initial_path: Some(PathBuf::from("/r/a")),
+        ..TuiOptions::default()
+    };
+    let mut app = App::new(dashboard_backend(), options, sink);
+    pump(&mut app, &mut rx);
+    assert_eq!(app.view(), View::Dashboard);
+    assert_eq!(app.tree().unwrap().path(app.cwd()), Path::new("/r/a"));
 }
 
 #[test]

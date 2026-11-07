@@ -15,7 +15,7 @@ pub mod output;
 pub mod tui_backend;
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser as _;
@@ -208,10 +208,43 @@ fn tui_options(ctx: &Ctx, root: &Path) -> bclean_tui::TuiOptions {
     }
 }
 
+/// Where the UI opens: plain `bclean` starts on the dashboard with the browser rooted at the
+/// index root containing the current directory (already indexed, so instant, and holding the
+/// paths the dashboard drills into), opened at the current directory. `bclean <path>` browses
+/// `path`. `tui.start_view` overrides which view comes first.
+fn start_location(
+    ctx: &Ctx,
+    path: Option<&Path>,
+) -> anyhow::Result<(PathBuf, bool, Option<PathBuf>)> {
+    let target = commands::abs(path)?;
+    let dashboard = match ctx.settings.config().tui.start_view {
+        bclean_model::TuiStartView::Auto => path.is_none(),
+        bclean_model::TuiStartView::Dashboard => true,
+        bclean_model::TuiStartView::Browser => false,
+    };
+    if path.is_some() {
+        return Ok((target, dashboard, None));
+    }
+    let root = ctx
+        .settings
+        .index_roots()
+        .into_iter()
+        .filter(|root| target.starts_with(root))
+        .max_by_key(|root| root.components().count());
+    Ok(match root {
+        Some(root) if root != target => (root, dashboard, Some(target)),
+        _ => (target, dashboard, None),
+    })
+}
+
 /// Launches the interactive browser (daemon backend by default, local with `--no-daemon`).
 fn browse(ctx: &Ctx, rt: &tokio::runtime::Runtime, path: Option<&Path>) -> anyhow::Result<bool> {
-    let root = commands::abs(path)?;
-    let options = tui_options(ctx, &root);
+    let (root, start_on_dashboard, initial_path) = start_location(ctx, path)?;
+    let options = bclean_tui::TuiOptions {
+        start_on_dashboard,
+        initial_path,
+        ..tui_options(ctx, &root)
+    };
     let exit = if ctx.no_daemon {
         let engine = rt.block_on(ctx.engine())?;
         let backend = tui_backend::LocalBackend::new(engine, rt.handle().clone(), root);

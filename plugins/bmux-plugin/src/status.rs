@@ -64,9 +64,23 @@ pub struct Snapshot {
     pub volumes: Vec<VolumeStats>,
     /// Active (unacknowledged) alerts.
     pub alerts: Vec<AlertEvent>,
+    /// Reclaimable bytes from the daemon's dashboard summary (absent on older daemons).
+    pub reclaimable: Option<Reclaimable>,
     /// When the snapshot was last updated (Unix seconds).
     pub updated_at: Option<i64>,
 }
+
+/// Reclaimable totals shown by the plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Reclaimable {
+    /// All reclaimable bytes.
+    pub total: u64,
+    /// Bytes an automatic clean would select.
+    pub safe: u64,
+}
+
+/// Smallest safe-to-clean amount worth a tab-bar mention.
+pub const RECLAIMABLE_SEGMENT_MIN: u64 = 1 << 30;
 
 impl Snapshot {
     /// Upserts volume samples by mount point.
@@ -181,6 +195,20 @@ pub fn render_segment(snapshot: &Snapshot, settings: &Settings, style: Style) ->
             );
             paint(&mut out, style, pressure_sgr(pressure), &text);
         }
+    }
+    if settings.show_reclaimable
+        && let Some(reclaimable) = snapshot.reclaimable
+        && reclaimable.safe >= RECLAIMABLE_SEGMENT_MIN
+    {
+        if !out.is_empty() {
+            out.push_str("  ");
+        }
+        paint(
+            &mut out,
+            style,
+            "32",
+            &format!("♻ {}", human_bytes(reclaimable.safe)),
+        );
     }
     let alerts = snapshot.alerts.len();
     if alerts > 0 {
@@ -304,6 +332,14 @@ pub fn render_details(snapshot: &Snapshot, settings: &Settings, endpoint: &str) 
         );
     }
 
+    if let Some(reclaimable) = snapshot.reclaimable {
+        let _ = writeln!(
+            out,
+            "reclaimable: {} ({} safe to clean now; run `bclean` for the dashboard)",
+            human_bytes(reclaimable.total),
+            human_bytes(reclaimable.safe)
+        );
+    }
     let _ = writeln!(out, "active alerts: {}", snapshot.alerts.len());
     for alert in &snapshot.alerts {
         let _ = writeln!(out, "  {}", alert_line(alert));
@@ -348,6 +384,7 @@ mod tests {
             daemon: None,
             volumes,
             alerts,
+            reclaimable: None,
             updated_at: Some(0),
         }
     }
@@ -470,6 +507,39 @@ mod tests {
         assert_eq!(percent(1.5), 100);
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
+    fn segment_and_details_show_reclaimable_space() {
+        let mut snapshot = connected(vec![volume("/", 100, 50)], Vec::new());
+        snapshot.reclaimable = Some(Reclaimable {
+            total: 80 << 30,
+            safe: 61 << 30,
+        });
+        let segment = render_segment(&snapshot, &Settings::default(), Style::Plain);
+        assert!(segment.ends_with("♻ 61.0 GiB"), "{segment}");
+        let details = render_details(&snapshot, &Settings::default(), "/tmp/b.sock");
+        assert!(
+            details.contains("reclaimable: 80.0 GiB (61.0 GiB safe"),
+            "{details}"
+        );
+
+        // Small amounts and opting out keep the segment quiet.
+        snapshot.reclaimable = Some(Reclaimable {
+            total: 10,
+            safe: 10,
+        });
+        let segment = render_segment(&snapshot, &Settings::default(), Style::Plain);
+        assert!(!segment.contains('♻'), "{segment}");
+        snapshot.reclaimable = Some(Reclaimable {
+            total: 80 << 30,
+            safe: 61 << 30,
+        });
+        let quiet = Settings {
+            show_reclaimable: false,
+            ..Settings::default()
+        };
+        assert!(!render_segment(&snapshot, &quiet, Style::Plain).contains('♻'));
     }
 
     #[test]

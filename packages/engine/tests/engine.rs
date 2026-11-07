@@ -288,6 +288,57 @@ async fn expand_updates_every_root_containing_the_path() {
     assert!(expanded(&root), "the outer root was not updated");
 }
 
+/// The dashboard summarizes reclaimable data by kind, category, and project, counting nested
+/// classifications once.
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_summarizes_reclaimable_data() {
+    let (_dir, root, engine) = setup("").await;
+    engine.scan(&root).await.unwrap();
+    let summary = engine.dashboard(std::slice::from_ref(&root)).await.unwrap();
+
+    assert_eq!(summary.roots.len(), 1);
+    assert_eq!(summary.roots[0].path, root);
+    let reclaim = &summary.reclaimable;
+    assert_eq!(reclaim.items, 2, "{summary:#?}");
+    assert!(reclaim.total >= 50_000, "{reclaim:?}");
+    assert!(reclaim.safe <= reclaim.total);
+    assert_eq!(
+        reclaim.ephemeral_stale + reclaim.ephemeral_fresh + reclaim.durable_stale,
+        reclaim.total
+    );
+
+    let kinds: Vec<_> = summary.by_kind.iter().map(|b| b.kind).collect();
+    assert!(
+        kinds.contains(&Some(bclean_model::EphemeralKind::BuildArtifact)),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&Some(bclean_model::EphemeralKind::Dependencies)),
+        "{kinds:?}"
+    );
+    assert_eq!(
+        summary.by_kind.iter().map(|b| b.bytes).sum::<u64>(),
+        reclaim.total
+    );
+    assert_eq!(
+        summary.by_category.iter().map(|b| b.bytes).sum::<u64>(),
+        reclaim.total
+    );
+    assert_eq!(summary.top_items.len(), 2);
+    assert!(summary.top_items[0].score >= summary.top_items[1].score);
+
+    // Each item is attributed to the directory holding its project marker.
+    let projects: Vec<_> = summary.projects.iter().map(|p| p.path.clone()).collect();
+    assert!(projects.contains(&root.join("app")), "{projects:?}");
+    assert!(projects.contains(&root.join("web")), "{projects:?}");
+    let app = summary
+        .projects
+        .iter()
+        .find(|p| p.path == root.join("app"))
+        .unwrap();
+    assert_eq!(app.entries, ["target"]);
+}
+
 /// bclean's own snapshot and database writes must never feed back into the index.
 #[tokio::test(flavor = "multi_thread")]
 async fn own_data_dir_churn_is_ignored() {

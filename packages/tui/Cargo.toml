@@ -26,6 +26,7 @@ bmux_tui_components = { workspace = true, features = [
     "pane",
     "progress-bar",
     "scrollbar",
+    "sparkline",
     "status-bar",
     "tab-bar",
 ] }

@@ -22,6 +22,7 @@
 //!
 //! The engine is UI-agnostic: it never prints and never talks to sockets.
 
+mod dashboard;
 mod refresh;
 mod select;
 
@@ -174,6 +175,28 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// `monitor.index_roots`, expanded and made absolute (missing directories are skipped).
+    #[must_use]
+    pub fn index_roots(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .config()
+            .monitor
+            .index_roots
+            .iter()
+            .filter_map(|r| match self.expander.expand_path(r) {
+                Ok(p) => std::path::absolute(p).ok(),
+                Err(e) => {
+                    log::warn!("cannot expand index root {r}: {e}");
+                    None
+                }
+            })
+            .filter(|p| p.is_dir())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Loads configuration and compiles its rules.
     ///
     /// # Errors
@@ -330,6 +353,8 @@ struct Inner {
     started_at: i64,
     watchers: Mutex<Vec<String>>,
     exec_lock: tokio::sync::Mutex<()>,
+    /// Dashboard volume trends, keyed by mount point.
+    volume_trends: Mutex<BTreeMap<String, dashboard::VolumeTrend>>,
 }
 
 /// The shared bclean engine. Cheap to clone (all state is behind an `Arc`).
@@ -395,6 +420,7 @@ impl Engine {
                 policy: tokio::sync::Mutex::new(policy),
                 started_at: unix_now(),
                 watchers: Mutex::new(Vec::new()),
+                volume_trends: Mutex::new(BTreeMap::new()),
                 exec_lock: tokio::sync::Mutex::new(()),
             }),
         })
@@ -511,24 +537,7 @@ impl Engine {
     /// `monitor.index_roots`, expanded and made absolute (missing directories are skipped).
     #[must_use]
     pub fn index_roots(&self) -> Vec<PathBuf> {
-        let settings = self.settings();
-        let mut out: Vec<PathBuf> = settings
-            .config()
-            .monitor
-            .index_roots
-            .iter()
-            .filter_map(|r| match settings.expander.expand_path(r) {
-                Ok(p) => std::path::absolute(p).ok(),
-                Err(e) => {
-                    log::warn!("cannot expand index root {r}: {e}");
-                    None
-                }
-            })
-            .filter(|p| p.is_dir())
-            .collect();
-        out.sort();
-        out.dedup();
-        out
+        self.settings().index_roots()
     }
 
     /// The loaded tree for `root`.

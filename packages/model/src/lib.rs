@@ -11,8 +11,10 @@
 
 mod classification;
 mod config;
+mod dashboard;
 mod units;
 
 pub use classification::*;
 pub use config::*;
+pub use dashboard::*;
 pub use units::*;

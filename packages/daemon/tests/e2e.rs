@@ -339,6 +339,23 @@ async fn daemon_flows_through_the_client() {
     );
     assert!(after.generation > snapshot.generation);
 
+    // Dashboard summary over the scanned root.
+    let Response::Dashboard(summary) = client
+        .request(Request::Dashboard {
+            roots: vec![fx.root.clone()],
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("dashboard");
+    };
+    assert!(
+        summary.roots.iter().any(|r| r.path == fx.root),
+        "{summary:?}"
+    );
+    assert!(summary.reclaimable.items >= 1, "{summary:?}");
+    assert!(summary.reclaimable.total > 0);
+
     client.request(Request::Shutdown).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), serving)
         .await

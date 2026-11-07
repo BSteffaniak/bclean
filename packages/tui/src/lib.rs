@@ -29,6 +29,7 @@
 
 mod app;
 pub mod backend;
+pub mod dashboard;
 mod format;
 pub mod listing;
 mod memory;

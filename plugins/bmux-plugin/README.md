@@ -107,6 +107,7 @@ critical_percent = 90          # bold red at or above this usage
 volumes = []                   # mount points to consider; empty = all volumes the daemon reports
 show_when_ok = true            # show the volume even below the warning threshold
 offline_indicator = true       # dim "◌ bclean" while the daemon is unreachable
+show_reclaimable = true        # append "♻ 61.2 GiB" (safe to clean now) once it reaches 1 GiB
 tab_bar = true                 # mirror the segment to bmux's tab bar (status item id "disk")
 notify = true                  # toast new alerts in the tab bar and queue them for the next `status`
 open_program = "bclean"        # what `open` runs
@@ -127,7 +128,7 @@ with a message in the bmux server log; they never abort bmux startup.
   a subscription open.
 - **Monitor:** `activate` (in the bmux server) starts a `bclean-bmux-monitor` thread with its own
   current-thread Tokio runtime. It connects through `bclean_client` (no autostart by default), sends
-  `Status`, `Volumes`, and `Alerts`, then `Subscribe { topics: [Volumes, Alerts] }`. A reader task
+  `Status`, `Volumes`, `Alerts`, and `Dashboard` (for the reclaimable amount), then `Subscribe { topics: [Volumes, Alerts] }`. A reader task
   forwards pushed events over a channel, a separate connection does a full refresh every
   `refresh_secs`, and on disconnect it marks the state offline and retries with backoff.
   `deactivate` stops and joins the thread.

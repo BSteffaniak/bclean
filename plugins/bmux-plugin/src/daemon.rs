@@ -9,7 +9,7 @@ use bclean_model::AlertEvent;
 use bclean_protocol::{Endpoint, PROTOCOL_VERSION, Request, Response};
 
 use crate::settings::Settings;
-use crate::status::{Connection, Snapshot};
+use crate::status::{Connection, Reclaimable, Snapshot};
 
 /// Resolves the daemon endpoint: the plugin `socket` setting, else bclean's own
 /// `daemon.socket`, else the platform default from [`bclean_config::AppDirs`].
@@ -110,11 +110,23 @@ pub async fn fetch(client: &mut Client) -> Result<Snapshot, ClientError> {
         other => return Err(unexpected(&other)),
     };
     let alerts = alerts(client).await?;
+    // Older daemons don't know the request; the segment simply omits the amount.
+    let reclaimable = match client
+        .request(Request::Dashboard { roots: Vec::new() })
+        .await
+    {
+        Ok(Response::Dashboard(summary)) => Some(Reclaimable {
+            total: summary.reclaimable.total,
+            safe: summary.reclaimable.safe,
+        }),
+        _ => None,
+    };
     Ok(Snapshot {
         connection: Connection::Connected,
         daemon: Some(daemon),
         volumes,
         alerts,
+        reclaimable,
         updated_at: Some(now()),
     })
 }

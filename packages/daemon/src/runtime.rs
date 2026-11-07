@@ -105,6 +105,9 @@ pub async fn handle(
 ) -> Result<Response, EngineError> {
     Ok(match request {
         Request::Status => Response::Status(engine.status(version)),
+        Request::Dashboard { roots } => {
+            Response::Dashboard(Box::new(engine.dashboard(&roots).await?))
+        }
         Request::Volumes => Response::Volumes {
             volumes: engine.volumes().await?,
         },

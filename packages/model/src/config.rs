@@ -759,6 +759,21 @@ pub struct TuiConfig {
     pub show_hidden: bool,
     /// Ask before executing a clean plan.
     pub confirm: bool,
+    /// What `bclean` opens on.
+    pub start_view: TuiStartView,
+}
+
+/// What `bclean` opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TuiStartView {
+    /// The dashboard when no path is given (`bclean`), the browser for `bclean <path>`.
+    #[default]
+    Auto,
+    /// Always the dashboard.
+    Dashboard,
+    /// Always the browser.
+    Browser,
 }
 
 impl Default for TuiConfig {
@@ -767,6 +782,7 @@ impl Default for TuiConfig {
             sort: TuiSort::Size,
             show_hidden: true,
             confirm: true,
+            start_view: TuiStartView::Auto,
         }
     }
 }

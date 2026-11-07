@@ -120,6 +120,8 @@ fn spawn_daemon(endpoint: Endpoint, state: Arc<Mutex<State>>) {
                                     push.push(Event::Alert(new));
                                     Response::Ok
                                 }
+                                // Nothing safe to clean: the segment stays as asserted below.
+                                Request::Dashboard { .. } => Response::Dashboard(Box::default()),
                                 other => panic!("unexpected request {other:?}"),
                             }
                         };

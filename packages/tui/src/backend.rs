@@ -55,8 +55,10 @@ pub trait Backend: Send + 'static {
     /// Requests cancellation of the running execution (best effort).
     fn cancel_execution(&mut self) {}
 
-    /// Requests fresh dashboard data. Answer with [`BackendEvent::Volumes`],
-    /// [`BackendEvent::Alerts`], and/or [`BackendEvent::Status`].
+    /// Requests fresh dashboard data. Answer with [`BackendEvent::Dashboard`] and optionally
+    /// [`BackendEvent::Volumes`], [`BackendEvent::Alerts`], and [`BackendEvent::Status`].
+    /// Backends should also push a new [`BackendEvent::Dashboard`] on their own when the
+    /// underlying data changes (throttled).
     fn refresh_dashboard(&mut self) {}
 }
 
@@ -158,6 +160,8 @@ pub enum BackendEvent {
     Plan(CleanPlan),
     /// Plan execution progress.
     Execution(ExecutionEvent),
+    /// Dashboard summary (an answer to [`Backend::refresh_dashboard`], or a live update).
+    Dashboard(Box<bclean_model::DashboardSummary>),
     /// Volume usage for the dashboard.
     Volumes(Vec<VolumeStats>),
     /// Currently active alerts for the dashboard.

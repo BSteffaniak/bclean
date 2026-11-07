@@ -575,6 +575,40 @@ fn print_volumes(volumes: &[VolumeStats]) {
     print!("{}", table.render());
 }
 
+fn print_reclaimable(summary: &bclean_model::DashboardSummary) {
+    let r = &summary.reclaimable;
+    if r.items == 0 {
+        println!("reclaimable: nothing found in the index yet");
+        return;
+    }
+    println!(
+        "reclaimable: {} in {} items ({} safe to clean now, {} to review; `bclean` opens the dashboard)",
+        size(r.total),
+        r.items,
+        size(r.safe),
+        size(r.review())
+    );
+    let kinds: Vec<String> = summary
+        .by_kind
+        .iter()
+        .take(4)
+        .map(|b| format!("{} {}", bclean_model::kind_label(b.kind), size(b.bytes)))
+        .collect();
+    println!("  by kind: {}", kinds.join(" · "));
+    for volume in &summary.volumes {
+        if let (Some(rate), Some(full)) = (volume.growth_per_day, volume.full_in_secs)
+            && rate > 0
+        {
+            println!(
+                "  {}: growing {}/day, full in ~{}",
+                volume.stats.mount_point,
+                size(rate.unsigned_abs()),
+                age(full)
+            );
+        }
+    }
+}
+
 fn print_daemon_status(status: &DaemonStatus) {
     let now = unix_now();
     println!(
@@ -645,10 +679,24 @@ pub async fn status(ctx: &Ctx, format: Format) -> anyhow::Result<()> {
         Response::Alerts { alerts } => alerts,
         other => return Err(unexpected(&other)),
     };
+    let dashboard = match conn
+        .request(Request::Dashboard { roots: Vec::new() })
+        .await?
+    {
+        Response::Dashboard(summary) => summary,
+        other => return Err(unexpected(&other)),
+    };
     if format == Format::Json {
-        return print_json(&json!({ "volumes": volumes, "daemon": daemon, "alerts": alerts }));
+        return print_json(&json!({
+            "volumes": volumes,
+            "daemon": daemon,
+            "alerts": alerts,
+            "dashboard": dashboard,
+        }));
     }
     print_volumes(&volumes);
+    println!();
+    print_reclaimable(&dashboard);
     println!();
     match &daemon {
         Some(status) => print_daemon_status(status),

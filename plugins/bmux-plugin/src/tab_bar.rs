@@ -502,6 +502,7 @@ mod tests {
             daemon: None,
             volumes: vec![volume(free)],
             alerts,
+            reclaimable: None,
             updated_at: Some(0),
         }
     }

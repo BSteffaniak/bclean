@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bclean_model::{ActionSpec, AlertEvent, Classification, VolumeStats};
+use bclean_model::{ActionSpec, AlertEvent, Classification, DashboardSummary, VolumeStats};
 use bclean_tree::{EntryKind, NodeFlags, NodeId, SizeMode, Tree};
 use bmux_keyboard::{KeyCode, KeyStroke};
 use bmux_tui::event::{Event, MouseEventKind};
@@ -18,8 +18,9 @@ use crate::backend::{
     ActionOverride, Backend, BackendEvent, BackendStatus, CleanPlan, CleanReport, EventSink,
     ExecutionEvent, ItemOutcome, PlanRequest, ScanProgress,
 };
+use crate::dashboard::{DashGroup, DashPanel, DashState};
 use crate::listing::{
-    ClassStore, Lens, ListingCache, ListingKey, SortBy, SortSpec, top_level_paths,
+    ClassStore, Lens, LensFilter, ListingCache, ListingKey, SortBy, SortSpec, top_level_paths,
 };
 use crate::widgets::FixedRowsState;
 
@@ -38,6 +39,8 @@ pub struct TuiOptions {
     pub sort: SortSpec,
     /// Start on the dashboard instead of the browser.
     pub start_on_dashboard: bool,
+    /// Directory to open once the first tree arrives (inside the scan root), if not the root.
+    pub initial_path: Option<PathBuf>,
     /// Minimum interval between frames (`None` = unthrottled).
     pub frame_interval: Option<Duration>,
 }
@@ -51,6 +54,7 @@ impl Default for TuiOptions {
             lens: Lens::All,
             sort: SortSpec::default(),
             start_on_dashboard: false,
+            initial_path: None,
             frame_interval: Some(Duration::from_millis(16)),
         }
     }
@@ -217,6 +221,11 @@ pub struct App<B: Backend> {
     pub(crate) modal: Option<Modal>,
     pub(crate) volumes: Vec<VolumeStats>,
     pub(crate) alerts: Vec<AlertEvent>,
+    pub(crate) dashboard: Option<Box<DashboardSummary>>,
+    pub(crate) dash: DashState,
+    /// Kind/category restriction of flat lenses (from a dashboard drill-down).
+    pub(crate) lens_filter: Option<LensFilter>,
+    initial_path: Option<PathBuf>,
     pub(crate) status: Option<BackendStatus>,
     pub(crate) message: Option<(String, MessageLevel)>,
     pub(crate) expanding: BTreeSet<PathBuf>,
@@ -234,6 +243,7 @@ impl<B: Backend> App<B> {
     pub fn new(mut backend: B, options: TuiOptions, sink: EventSink) -> Self {
         backend.start(sink);
         backend.refresh_dashboard();
+        let initial_path = options.initial_path.clone();
         Self {
             backend,
             view: if options.start_on_dashboard {
@@ -262,6 +272,10 @@ impl<B: Backend> App<B> {
             modal: None,
             volumes: Vec::new(),
             alerts: Vec::new(),
+            dashboard: None,
+            dash: DashState::default(),
+            lens_filter: None,
+            initial_path,
             status: None,
             message: None,
             expanding: BTreeSet::new(),
@@ -344,6 +358,11 @@ impl<B: Backend> App<B> {
             apparent: self.apparent,
             show_hidden: self.show_hidden,
             filter: self.filter.clone(),
+            class_filter: if self.lens.is_flat() {
+                self.lens_filter.clone()
+            } else {
+                None
+            },
             tree_gen: self.tree_gen,
             class_gen: if class_sensitive {
                 self.classes.generation()
@@ -413,6 +432,10 @@ impl<B: Backend> App<B> {
             }
             BackendEvent::Plan(plan) => self.apply_plan(plan),
             BackendEvent::Execution(event) => self.apply_execution(event),
+            BackendEvent::Dashboard(summary) => {
+                self.dash.clamp(&summary);
+                self.dashboard = Some(summary);
+            }
             BackendEvent::Volumes(volumes) => self.volumes = volumes,
             BackendEvent::Alerts(alerts) => self.alerts = alerts,
             BackendEvent::Status(status) => self.status = Some(status),
@@ -436,8 +459,20 @@ impl<B: Backend> App<B> {
 
     fn replace_tree(&mut self, tree: Arc<Tree>) {
         let (cwd_path, selected_path) = self.capture_position();
+        let current = Arc::clone(&tree);
         self.tree = Some(tree);
         self.on_tree_changed(cwd_path, selected_path);
+        let tree = current;
+        if let Some(path) = self.initial_path.take()
+            && let Some((id, _)) = tree.find_nearest(&path)
+        {
+            let id = if tree.kind(id) == EntryKind::Dir {
+                id
+            } else {
+                tree.parent(id).unwrap_or(NodeId::ROOT)
+            };
+            self.enter_dir(id);
+        }
         self.resolve_expansions();
     }
 
@@ -603,6 +638,7 @@ impl<B: Backend> App<B> {
                 exec.current = None;
                 exec.current_progress = None;
                 exec.report = Some(report);
+                self.backend.refresh_dashboard();
             }
         }
     }
@@ -722,26 +758,217 @@ impl<B: Backend> App<B> {
     }
 
     fn handle_dashboard_key(&mut self, key: &Key) -> Handled {
-        match key.ch() {
-            Some('q') => Handled::Quit,
-            Some('D' | 'b') => {
+        let len = self.dashboard.as_deref().map_or(0, |summary| {
+            crate::dashboard::rows(summary, &self.dash, self.dash.focus)
+        });
+        match key.code {
+            KeyCode::Tab => self.dash.focus = self.dash.focus.cycle(key.shift),
+            KeyCode::Up => self.dash.move_by(-1, len),
+            KeyCode::Down => self.dash.move_by(1, len),
+            KeyCode::PageUp => self.dash.move_by(-10, len),
+            KeyCode::PageDown => self.dash.move_by(10, len),
+            KeyCode::Home => self.dash.jump(false, len),
+            KeyCode::End => self.dash.jump(true, len),
+            KeyCode::Enter | KeyCode::Right => self.dash_open(),
+            KeyCode::Space => self.dash_toggle_mark(),
+            KeyCode::Escape => self.view = View::Browser,
+            KeyCode::Char(_) if !key.ctrl => match key.ch() {
+                Some('q') => return Handled::Quit,
+                Some('k') => self.dash.move_by(-1, len),
+                Some('j') => self.dash.move_by(1, len),
+                Some('g') => self.dash.jump(false, len),
+                Some('G') => self.dash.jump(true, len),
+                Some('l') => self.dash_open(),
+                Some('D' | 'b') => self.view = View::Browser,
+                Some('c') => self.dash_clean_safe(),
+                Some('p') => self.dash_plan(),
+                Some('x') => {
+                    let count = self.marked.len();
+                    self.marked.clear();
+                    self.info(format!("cleared {count} marks"), MessageLevel::Info);
+                }
+                Some('v') => {
+                    self.dash.group = match self.dash.group {
+                        DashGroup::Kind => DashGroup::Category,
+                        DashGroup::Category => DashGroup::Kind,
+                    };
+                    self.clamp_dash();
+                }
+                Some('w') => {
+                    self.dash.growth_week = !self.dash.growth_week;
+                    self.clamp_dash();
+                }
+                Some('r') => {
+                    self.backend.refresh_dashboard();
+                    self.info("refreshing dashboard…", MessageLevel::Info);
+                }
+                Some('?') => self.modal = Some(Modal::Help { scroll: 0 }),
+                _ => return Handled::Ignored,
+            },
+            _ => return Handled::Ignored,
+        }
+        Handled::Redraw
+    }
+
+    fn clamp_dash(&mut self) {
+        if let Some(summary) = self.dashboard.as_deref() {
+            self.dash.clamp(summary);
+        }
+    }
+
+    /// Paths behind the focused dashboard row: a candidate, or a project's reclaimable entries
+    /// (never the project itself).
+    fn dash_row_paths(&self) -> Vec<PathBuf> {
+        let Some(summary) = self.dashboard.as_deref() else {
+            return Vec::new();
+        };
+        let index = self.dash.selected(self.dash.focus);
+        match self.dash.focus {
+            DashPanel::Wins => summary
+                .top_items
+                .get(index)
+                .map(|item| vec![item.path.clone()])
+                .unwrap_or_default(),
+            DashPanel::Projects => summary
+                .projects
+                .get(index)
+                .map(|p| p.paths.clone())
+                .unwrap_or_default(),
+            DashPanel::Kinds | DashPanel::Growth => Vec::new(),
+        }
+    }
+
+    fn dash_toggle_mark(&mut self) {
+        let paths = self.dash_row_paths();
+        if paths.is_empty() {
+            self.info(
+                "open this row (enter) to pick items to mark",
+                MessageLevel::Info,
+            );
+            return;
+        }
+        if paths.iter().all(|p| self.marked.contains(p)) {
+            for path in &paths {
+                self.marked.remove(path);
+            }
+        } else {
+            self.marked.extend(paths);
+        }
+        if self.dash.focus == DashPanel::Wins {
+            let len = self.dashboard.as_deref().map_or(0, |s| s.top_items.len());
+            self.dash.move_by(1, len);
+        }
+    }
+
+    fn dash_plan(&mut self) {
+        let paths = if self.marked.is_empty() {
+            self.dash_row_paths()
+        } else {
+            top_level_paths(self.marked.iter().cloned())
+        };
+        if paths.is_empty() {
+            self.info(
+                "mark items (space) or select a candidate or project first",
+                MessageLevel::Warning,
+            );
+            return;
+        }
+        self.request_plan(paths, ActionOverride::RuleDefault);
+    }
+
+    fn dash_clean_safe(&mut self) {
+        let paths = self
+            .dashboard
+            .as_deref()
+            .map(|s| s.reclaimable.safe_paths.clone())
+            .unwrap_or_default();
+        if paths.is_empty() {
+            self.info("nothing is safe to clean automatically", MessageLevel::Info);
+            return;
+        }
+        self.request_plan(paths, ActionOverride::RuleDefault);
+    }
+
+    /// Drills into the focused dashboard row: a kind or ecosystem opens the Reclaimable lens
+    /// filtered to it; a candidate, project, or growing directory opens it in the browser.
+    fn dash_open(&mut self) {
+        let Some(summary) = self.dashboard.clone() else {
+            return;
+        };
+        let index = self.dash.selected(self.dash.focus);
+        match self.dash.focus {
+            DashPanel::Kinds => {
+                let filter = match self.dash.group {
+                    DashGroup::Kind => summary.by_kind.get(index).map(|b| LensFilter::Kind(b.kind)),
+                    DashGroup::Category => summary
+                        .by_category
+                        .get(index)
+                        .map(|b| LensFilter::Category(b.category.clone())),
+                };
+                let Some(filter) = filter else {
+                    return;
+                };
                 self.view = View::Browser;
-                Handled::Redraw
+                self.set_lens(Lens::Reclaimable);
+                self.lens_filter = Some(filter);
+                self.filter.clear();
+                self.rows = FixedRowsState::default();
+                self.clamp_rows();
             }
-            Some('r') => {
-                self.backend.refresh_dashboard();
-                self.info("refreshing dashboard…", MessageLevel::Info);
-                Handled::Redraw
+            DashPanel::Wins => {
+                if let Some(item) = summary.top_items.get(index) {
+                    self.show_in_browser(&item.path, false);
+                }
             }
-            Some('?') => {
-                self.modal = Some(Modal::Help { scroll: 0 });
-                Handled::Redraw
+            DashPanel::Projects => {
+                if let Some(project) = summary.projects.get(index) {
+                    self.show_in_browser(&project.path, true);
+                }
             }
-            _ if key.code == KeyCode::Escape => {
-                self.view = View::Browser;
-                Handled::Redraw
+            DashPanel::Growth => {
+                if let Some(item) = crate::dashboard::growth(&summary, &self.dash).get(index) {
+                    self.show_in_browser(&item.path, true);
+                }
             }
-            _ => Handled::Ignored,
+        }
+    }
+
+    /// Opens the browser at `path`: inside it (`enter`), or at its parent with it selected.
+    fn show_in_browser(&mut self, path: &Path, enter: bool) {
+        let Some(tree) = self.tree.clone() else {
+            self.info("the index is still loading", MessageLevel::Info);
+            return;
+        };
+        let Some(id) = tree.find(path) else {
+            self.info(
+                format!(
+                    "{} is outside {} (run bclean {} to browse it)",
+                    crate::dashboard::tilde(path),
+                    crate::dashboard::tilde(tree.root_path()),
+                    crate::dashboard::tilde(path)
+                ),
+                MessageLevel::Warning,
+            );
+            return;
+        };
+        self.view = View::Browser;
+        self.lens_rows.insert(self.lens, self.rows);
+        self.lens = Lens::All;
+        self.lens_filter = None;
+        self.filter.clear();
+        if enter && tree.kind(id) == EntryKind::Dir {
+            if tree.flags(id).contains(NodeFlags::SUMMARIZED) && !tree.has_children(id) {
+                // Summarized (`target/`): select it so enter expands it.
+                self.cwd = tree.parent(id).unwrap_or(NodeId::ROOT);
+                self.rows = FixedRowsState::default();
+                self.select_node(id);
+            } else {
+                self.enter_dir(id);
+            }
+        } else {
+            self.cwd = tree.parent(id).unwrap_or(NodeId::ROOT);
+            self.rows = FixedRowsState::default();
+            self.select_node(id);
         }
     }
 
@@ -763,6 +990,10 @@ impl<B: Backend> App<B> {
             KeyCode::Escape => {
                 if self.explain_open {
                     self.explain_open = false;
+                } else if self.lens_filter.is_some() {
+                    self.lens_filter = None;
+                    self.rows = FixedRowsState::default();
+                    self.clamp_rows();
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
                     self.on_filter_changed();
@@ -846,6 +1077,7 @@ impl<B: Backend> App<B> {
         if lens == self.lens {
             return;
         }
+        self.lens_filter = None;
         self.lens_rows.insert(self.lens, self.rows);
         self.lens = lens;
         self.rows = self.lens_rows.get(&lens).copied().unwrap_or_default();

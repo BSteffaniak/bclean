@@ -85,6 +85,21 @@ alarms, and can auto-clean).
 - After any action, measure actual freed space via volume stats (APFS clones/snapshots make
   estimates fuzzy).
 
+## Dashboard
+
+- `Engine::dashboard` builds one compact `DashboardSummary` (`bclean_model`) from the in-memory
+  index, volume history, and the journal; `Request::Dashboard` serves it, and the TUI, `bclean
+  status`, and the bmux plugin all render the same numbers. Paths inside nested roots are taken
+  from the deepest root and counted once.
+- "Safe now" is exactly what the default automatic selection (`SelectSpec::default()`) picks, so
+  the number matches what `c` plans. Projects are the nearest directories holding a project
+  marker (`.git`, `Cargo.toml`, `package.json`, ...), outside tool-managed trees.
+- Volume composition matches roots to volumes by device id; the forecast is a least-squares
+  trend over the last 7 days of samples (shown after 6 hours of history).
+- TUI backends refresh the summary on tree, volume, and alert events, at most every 2 seconds.
+  Plain `bclean` opens it (`tui.start_view`), with the browser rooted at the index root holding
+  the current directory so every dashboard row can drill into it.
+
 ## Daemon
 
 - `bclean` connects to the daemon and spawns it detached if absent; version handshake restarts

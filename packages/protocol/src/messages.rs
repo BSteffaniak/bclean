@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use bclean_model::{AlertEvent, Classification, VolumeStats};
+use bclean_model::{AlertEvent, Classification, DashboardSummary, VolumeStats};
 use serde::{Deserialize, Serialize};
 
 /// Frames sent by clients.
@@ -178,6 +178,13 @@ pub enum Request {
         /// Maximum entries.
         limit: usize,
     },
+    /// Dashboard summary over the index roots plus `roots` (for example the root a client is
+    /// browsing).
+    Dashboard {
+        /// Extra roots to include, if loaded.
+        #[serde(default)]
+        roots: Vec<PathBuf>,
+    },
     /// Subscribe this connection to event topics.
     Subscribe {
         /// Topics.
@@ -296,6 +303,8 @@ pub enum Response {
         /// Active alerts.
         alerts: Vec<AlertEvent>,
     },
+    /// Reply to [`Request::Dashboard`].
+    Dashboard(Box<DashboardSummary>),
     /// Reply to [`Request::Scan`], [`Request::Snapshot`], and [`Request::Rescan`] without
     /// `expand`.
     Snapshot(SnapshotRef),
