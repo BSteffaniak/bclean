@@ -1,11 +1,12 @@
 //! Blocking tree maintenance: the rules prune oracle, scanning, grafting rescanned
 //! subtrees, and re-classification of affected subtrees.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bclean_model::Classification;
 use bclean_rules::{Classifier, RuleSet};
@@ -69,11 +70,30 @@ pub enum Refresh {
         affected: Vec<PathBuf>,
         /// The last rescanned subtree, rooted at its path (for TUI expansion).
         subtree: Option<Box<Tree>>,
-        /// Summarized directories whose re-measurement was postponed by the caller's
-        /// `allow_resummarize` (shallow mode only).
+        /// Expensive directories whose refresh was postponed by the caller's `allow`
+        /// (shallow mode only).
         deferred: Vec<PathBuf>,
+        /// Expensive refreshes that ran, with how long each took (shallow mode only).
+        costly: Vec<Costly>,
     },
 }
+
+/// An expensive directory refresh, which the caller may rate-limit (see `allow` on
+/// [`refresh_dirs`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Costly {
+    /// The directory.
+    pub path: PathBuf,
+    /// How long it took.
+    pub took: Duration,
+    /// A summarized directory re-measured, rather than a large directory re-listed.
+    pub summarized: bool,
+}
+
+/// Re-listing a directory that takes at least this long is reported as [`Costly`]: a temp
+/// directory with tens of thousands of entries takes seconds to list, and busy ones change
+/// every few seconds.
+pub const SLOW_LISTING: Duration = Duration::from_millis(100);
 
 /// Scanner context for refreshes.
 pub struct ScanCtx<'a> {
@@ -87,9 +107,11 @@ pub struct ScanCtx<'a> {
 
 /// Reconciles `dirs` inside `tree` according to `mode`.
 ///
-/// A path inside a summarized directory re-measures that directory, but only when
-/// `allow_resummarize` returns `true` for it; otherwise it is reported in
-/// [`Refresh::Partial::deferred`] (shallow mode only, so explicit rescans are never postponed).
+/// A path inside a summarized directory re-measures that directory. Re-measuring it, or
+/// re-listing any directory, happens only when `allow` returns `true` for it; otherwise it is
+/// reported in [`Refresh::Partial::deferred`] (shallow mode only, so explicit rescans are
+/// never postponed). Expensive refreshes are reported in [`Refresh::Partial::costly`], so the
+/// caller can postpone the next one.
 ///
 /// # Errors
 ///
@@ -99,10 +121,10 @@ pub fn refresh_dirs(
     dirs: &[PathBuf],
     mode: RefreshMode,
     ctx: &ScanCtx<'_>,
-    allow_resummarize: &mut dyn FnMut(&Path) -> bool,
+    allow: &mut dyn FnMut(&Path) -> bool,
 ) -> Result<Refresh, ScanError> {
     match mode {
-        RefreshMode::Shallow => refresh_shallow(tree, dirs, ctx, allow_resummarize),
+        RefreshMode::Shallow => refresh_shallow(tree, dirs, ctx, allow),
         RefreshMode::Deep { expand } => refresh_deep(tree, dirs, expand, ctx),
     }
 }
@@ -111,12 +133,14 @@ fn refresh_shallow(
     tree: &mut Tree,
     dirs: &[PathBuf],
     ctx: &ScanCtx<'_>,
-    allow_resummarize: &mut dyn FnMut(&Path) -> bool,
+    allow: &mut dyn FnMut(&Path) -> bool,
 ) -> Result<Refresh, ScanError> {
     let root = tree.root_path().to_path_buf();
     let mut affected = Vec::new();
     let mut deferred = Vec::new();
+    let mut costly = Vec::new();
     let mut summarized_done: Vec<NodeId> = Vec::new();
+    let mut listed: BTreeSet<NodeId> = BTreeSet::new();
     for dir in dirs {
         if !dir.starts_with(&root) {
             continue;
@@ -139,12 +163,21 @@ fn refresh_shallow(
                 continue;
             }
             summarized_done.push(s);
-            if !allow_resummarize(&tree.path(s)) {
-                deferred.push(tree.path(s));
+            let path = tree.path(s);
+            if !allow(&path) {
+                deferred.push(path);
                 continue;
             }
+            let started = Instant::now();
             match resummarize(tree, s, ctx)? {
-                Some((path, _)) => affected.push(path),
+                Some((path, _)) => {
+                    costly.push(Costly {
+                        path: path.clone(),
+                        took: started.elapsed(),
+                        summarized: true,
+                    });
+                    affected.push(path);
+                }
                 None => return Ok(Refresh::Full),
             }
             continue;
@@ -152,18 +185,34 @@ fn refresh_shallow(
         if tree
             .flags(node)
             .intersects(NodeFlags::EXCLUDED.union(NodeFlags::OTHER_FS))
+            || !listed.insert(node)
         {
             continue;
         }
+        let path = tree.path(node);
+        if !allow(&path) {
+            deferred.push(path);
+            continue;
+        }
+        let started = Instant::now();
         match reconcile_dir(tree, node, ctx)? {
             Some(changed) => affected.extend(changed),
             None => return Ok(Refresh::Full),
+        }
+        let took = started.elapsed();
+        if took >= SLOW_LISTING {
+            costly.push(Costly {
+                path,
+                took,
+                summarized: false,
+            });
         }
     }
     Ok(Refresh::Partial {
         affected,
         subtree: None,
         deferred,
+        costly,
     })
 }
 
@@ -346,6 +395,7 @@ fn refresh_deep(
         affected,
         subtree,
         deferred: Vec::new(),
+        costly: Vec::new(),
     })
 }
 

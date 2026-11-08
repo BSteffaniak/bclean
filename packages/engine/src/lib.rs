@@ -340,10 +340,11 @@ struct RootState {
     progress: Option<Arc<ScanProgress>>,
     /// When the in-memory tree first diverged from the persisted snapshot.
     unsaved_since: Option<Instant>,
-    /// When each recently re-measured summarized directory may be re-measured again.
-    summary_due: BTreeMap<PathBuf, Instant>,
-    /// Summarized directories with changes whose re-measurement was postponed.
-    deferred_summaries: BTreeSet<PathBuf>,
+    /// When each recently refreshed expensive directory (a summarized one re-measured, or a
+    /// huge one re-listed) may be refreshed again.
+    cooldowns: BTreeMap<PathBuf, Instant>,
+    /// Expensive directories with changes whose refresh was postponed.
+    deferred_dirs: BTreeSet<PathBuf>,
     /// Full scans completed since the engine started.
     full_scans: u64,
     /// Incremental refreshes applied since the engine started.
@@ -776,7 +777,7 @@ impl Engine {
             state.generation += 1;
             state.scanned_at = Some(now);
             state.cursor = cursor;
-            state.deferred_summaries.clear();
+            state.deferred_dirs.clear();
             if state.pending_rescans.is_empty() {
                 state.rescan_owed = false;
                 state.owed_cursor = None;
@@ -876,7 +877,7 @@ impl Engine {
     }
 
     /// Runs postponed work that has become due: rescans waiting for the rescan budget, and
-    /// summarized directories whose cooldown (see [`Engine::summary_cooldown`]) has elapsed.
+    /// expensive directories whose cooldown (see [`Engine::cooldown`]) has elapsed.
     ///
     /// # Errors
     ///
@@ -887,14 +888,9 @@ impl Engine {
             let due: Vec<PathBuf> = {
                 let state = slot.state.read();
                 state
-                    .deferred_summaries
+                    .deferred_dirs
                     .iter()
-                    .filter(|p| {
-                        state
-                            .summary_due
-                            .get(*p)
-                            .is_none_or(|t| Instant::now() >= *t)
-                    })
+                    .filter(|p| state.cooldowns.get(*p).is_none_or(|t| Instant::now() >= *t))
                     .cloned()
                     .collect()
             };
@@ -1280,9 +1276,9 @@ impl Engine {
         let Some(tree) = slot.state.write().tree.take() else {
             return Ok((self.full_scan_locked(slot, None).await?.snapshot, None));
         };
-        let (mut classes, summary_due) = {
+        let (mut classes, cooldowns) = {
             let state = slot.state.read();
-            (state.classes.clone(), state.summary_due.clone())
+            (state.classes.clone(), state.cooldowns.clone())
         };
         let (options, oracle) = Self::scan_options(&settings, &slot.root);
         let rules = Arc::clone(&settings.rules);
@@ -1297,22 +1293,15 @@ impl Engine {
                 progress: &progress,
             };
             let now = Instant::now();
-            let mut refreshed = Vec::new();
-            let mut allow = |path: &Path| {
-                let due = summary_due.get(path).is_none_or(|t| now >= *t);
-                if due {
-                    refreshed.push(path.to_path_buf());
-                }
-                due
-            };
+            let mut allow = |path: &Path| cooldowns.get(path).is_none_or(|t| now >= *t);
             let result = refresh::refresh_dirs(&mut tree, &dirs, mode, &ctx, &mut allow);
             if let Ok(Refresh::Partial { affected, .. }) = &result {
                 refresh::reclassify(&rules, &tree, &mut classes, affected);
             }
-            (tree, classes, result, refreshed, progress.snapshot().dirs)
+            (tree, classes, result, progress.snapshot().dirs)
         })
         .await;
-        let (tree, classes, result, refreshed, dirs_read) = match joined {
+        let (tree, classes, result, dirs_read) = match joined {
             Ok(v) => v,
             Err(e) => {
                 // The tree was lost with the panicked task: rebuild it from scratch.
@@ -1321,7 +1310,7 @@ impl Engine {
             }
         };
         slot.state.write().tree = Some(Arc::new(tree));
-        let (affected, subtree, deferred) = match result? {
+        let (affected, subtree, deferred, costly) = match result? {
             Refresh::Full => {
                 log::info!("{} changed at its root; rescanning it", slot.root.display());
                 return Ok((self.full_scan_locked(slot, None).await?.snapshot, None));
@@ -1330,7 +1319,8 @@ impl Engine {
                 affected,
                 subtree,
                 deferred,
-            } => (affected, subtree.map(|t| Arc::new(*t)), deferred),
+                costly,
+            } => (affected, subtree.map(|t| Arc::new(*t)), deferred, costly),
         };
         log::debug!(
             "refreshed {} dir(s) in {} in {:.2?} ({} dirs read, {} changed, {} deferred)",
@@ -1344,14 +1334,14 @@ impl Engine {
         let finished = Instant::now();
         let changed = !affected.is_empty() || subtree.is_some();
         {
-            let due = finished + Self::summary_cooldown(&settings, finished - started);
             let mut state = slot.state.write();
-            state.summary_due.retain(|_, t| *t > finished);
-            for path in refreshed {
-                state.deferred_summaries.remove(&path);
-                state.summary_due.insert(path, due);
+            state.cooldowns.retain(|_, t| *t > finished);
+            for costly in costly {
+                state.deferred_dirs.remove(&costly.path);
+                let wait = Self::cooldown(&settings, costly.took, costly.summarized);
+                state.cooldowns.insert(costly.path, finished + wait);
             }
-            state.deferred_summaries.extend(deferred);
+            state.deferred_dirs.extend(deferred);
             state.refreshes += 1;
             if changed {
                 state.classes = classes;
@@ -1367,18 +1357,23 @@ impl Engine {
         Ok((snapshot, subtree))
     }
 
-    /// How long a summarized directory waits before it is re-measured again, after a refresh
-    /// that re-measured it took `took`: `monitor.summary_refresh_interval`, or longer when
-    /// re-measuring is expensive, so it takes at most `monitor.rescan_budget_percent` of wall
-    /// time. A busy build writes into `target/` continuously; re-walking a 20,000-directory
-    /// `target/` every minute costs more than the index is worth during the build.
-    fn summary_cooldown(settings: &Settings, took: Duration) -> Duration {
+    /// How long an expensive directory waits before it is refreshed again, after a refresh
+    /// that took `took`: long enough that refreshing it takes at most
+    /// `monitor.rescan_budget_percent` of wall time, and at least
+    /// `monitor.summary_refresh_interval` for a re-measured summarized directory.
+    ///
+    /// A busy build writes into `target/` continuously, and re-walking a 20,000-directory
+    /// `target/` every minute costs more than the index is worth during the build. Likewise a
+    /// temp directory with 40,000 entries takes seconds to re-list and changes every few.
+    fn cooldown(settings: &Settings, took: Duration, summarized: bool) -> Duration {
         let monitor = &settings.config().monitor;
         let percent = u32::from(monitor.rescan_budget_percent.clamp(1, 100));
-        monitor
-            .summary_refresh_interval
-            .duration()
-            .max(took * (100 - percent) / percent)
+        let budget = took * (100 - percent) / percent;
+        if summarized {
+            budget.max(monitor.summary_refresh_interval.duration())
+        } else {
+            budget
+        }
     }
 
     /// Watch configuration for the index roots, resuming from the oldest persisted cursor.
