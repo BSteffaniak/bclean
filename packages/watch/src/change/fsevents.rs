@@ -3,18 +3,19 @@
 //! The stream is directory-level (`kFSEventStreamCreateFlagFileEvents` is off): each event
 //! names a directory whose entries changed. Streams are created with `sinceWhen` set to the
 //! persisted event id, so changes made while bclean was not running are replayed; the replay
-//! ends with a `HistoryDone` event, which flushes the coalescer immediately.
+//! ends with a `HistoryDone` event, which flushes the coalescer immediately. Subtree rescans the
+//! replay asks for are held back until then and requested once (see [`Events`]).
 //!
 //! Event ids are only meaningful for a volume while its FSEvents store UUID
 //! (`FSEventsCopyUUIDForDevice`) is unchanged, so the cursor records the UUID of every root's
 //! volume and roots whose UUID changed are reported for a full rescan.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, c_char, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -134,6 +135,113 @@ mod ffi {
 struct CallbackState {
     tx: Sender<RawEvent>,
     volume_uuids: BTreeMap<String, String>,
+    events: Mutex<Events>,
+}
+
+/// Turns FSEvents flags into [`RawEvent`]s.
+///
+/// A replay of a long downtime can carry hundreds of "events were lost" markers spread over
+/// a minute or more of delivery. Each needs a full rescan of its subtree, but one rescan
+/// started after the replay covers them all, so subtree rescans are held back while history
+/// is replayed and requested once at `HistoryDone`. Acting on each as it arrives would rescan
+/// whole roots once per coalescer flush, and queue more passes under the rescan budget.
+struct Events {
+    roots: Arc<Roots>,
+    /// `Some` while history is being replayed: subtrees to rescan once it is done.
+    replay: Option<BTreeSet<PathBuf>>,
+    /// Lost-event markers seen since the last report.
+    dropped: usize,
+    kernel_dropped: bool,
+}
+
+impl Events {
+    const fn new(roots: Arc<Roots>, replaying: bool) -> Self {
+        Self {
+            roots,
+            replay: if replaying {
+                Some(BTreeSet::new())
+            } else {
+                None
+            },
+            dropped: 0,
+            kernel_dropped: false,
+        }
+    }
+
+    /// Translates one event into `out`; returns `true` when the coalescer should flush.
+    fn add(&mut self, path: PathBuf, flag: u32, out: &mut Vec<RawEvent>) -> bool {
+        if flag & ffi::kFSEventStreamEventFlagHistoryDone != 0 {
+            if let Some(held) = self.replay.take() {
+                if !held.is_empty() {
+                    log::info!(
+                        "FSEvents: history since the last run needs {} subtree(s) rescanned: {:?}",
+                        held.len(),
+                        held.iter().take(5).collect::<Vec<_>>()
+                    );
+                }
+                out.extend(held.into_iter().map(|p| self.rescan(p)));
+            }
+            return true;
+        }
+        let lost = flag
+            & (ffi::kFSEventStreamEventFlagUserDropped | ffi::kFSEventStreamEventFlagKernelDropped)
+            != 0;
+        if lost && self.replay.is_none() {
+            self.dropped += 1;
+            self.kernel_dropped |= flag & ffi::kFSEventStreamEventFlagKernelDropped != 0;
+        }
+        if lost
+            || flag
+                & (ffi::kFSEventStreamEventFlagRootChanged
+                    | ffi::kFSEventStreamEventFlagMustScanSubDirs)
+                != 0
+        {
+            // Events were lost, the root itself was moved, deleted, or recreated, or FSEvents
+            // coalesced changes below this directory: the whole subtree must be reconciled.
+            if let Some(held) = &mut self.replay {
+                held.insert(path);
+            } else {
+                if !lost {
+                    log::info!(
+                        "FSEvents: {} must be rescanned (flags {flag:#x})",
+                        path.display()
+                    );
+                }
+                out.push(self.rescan(path));
+            }
+        } else {
+            // A plain directory-level event: entries of this directory changed.
+            out.push(RawEvent::Dirty(path));
+        }
+        false
+    }
+
+    /// A rescan of `path`, or of every root when it lies outside them (the kernel reports
+    /// some losses at `/`).
+    fn rescan(&self, path: PathBuf) -> RawEvent {
+        if self.roots.map(&path).is_some() {
+            RawEvent::Rescan(path)
+        } else {
+            RawEvent::RescanAll
+        }
+    }
+
+    /// Logs the lost-event markers counted since the last call, once per callback.
+    fn report_dropped(&mut self) {
+        if self.dropped > 0 {
+            log::warn!(
+                "FSEvents dropped events {} time(s) ({}); the affected subtrees will be rescanned",
+                self.dropped,
+                if self.kernel_dropped {
+                    "kernel queue overflow"
+                } else {
+                    "bclean fell behind"
+                }
+            );
+            self.dropped = 0;
+            self.kernel_dropped = false;
+        }
+    }
 }
 
 /// FSEvents-backed [`ChangeSource`].
@@ -186,7 +294,15 @@ impl FsEventsSource {
             }
         }
 
-        let state = Box::into_raw(Box::new(CallbackState { tx, volume_uuids }));
+        let events = Events::new(
+            Arc::clone(&roots),
+            since != ffi::kFSEventStreamEventIdSinceNow,
+        );
+        let state = Box::into_raw(Box::new(CallbackState {
+            tx,
+            volume_uuids,
+            events: Mutex::new(events),
+        }));
         match create_stream(
             &roots.canonicals(),
             state.cast(),
@@ -418,44 +534,22 @@ extern "C" fn callback(
     };
     let mut max_id = 0;
     let mut flush = false;
+    let mut out = Vec::with_capacity(num_events);
+    let mut events = state
+        .events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for ((path, flag), id) in paths.iter().zip(flags).zip(ids) {
         max_id = max_id.max(*id);
         // SAFETY: each entry is a valid NUL-terminated C string (see above).
         let path = PathBuf::from(std::ffi::OsStr::from_bytes(
             unsafe { CStr::from_ptr(*path) }.to_bytes(),
         ));
-        let ev = if flag & ffi::kFSEventStreamEventFlagHistoryDone != 0 {
-            flush = true;
-            continue;
-        } else if flag
-            & (ffi::kFSEventStreamEventFlagUserDropped | ffi::kFSEventStreamEventFlagKernelDropped)
-            != 0
-        {
-            log::warn!(
-                "FSEvents dropped events ({}); the index will be rescanned",
-                if flag & ffi::kFSEventStreamEventFlagKernelDropped != 0 {
-                    "kernel queue overflow"
-                } else {
-                    "bclean fell behind"
-                }
-            );
-            RawEvent::RescanAll
-        } else if flag
-            & (ffi::kFSEventStreamEventFlagRootChanged
-                | ffi::kFSEventStreamEventFlagMustScanSubDirs)
-            != 0
-        {
-            // The root itself was moved, deleted, or recreated, or FSEvents coalesced changes
-            // below this directory: the whole subtree must be reconciled.
-            log::info!(
-                "FSEvents: {} must be rescanned (flags {flag:#x})",
-                path.display()
-            );
-            RawEvent::Rescan(path)
-        } else {
-            // A plain directory-level event: entries of this directory changed.
-            RawEvent::Dirty(path)
-        };
+        flush |= events.add(path, *flag, &mut out);
+    }
+    events.report_dropped();
+    drop(events);
+    for ev in out {
         let _ = state.tx.send(ev);
     }
     if max_id != 0 {
@@ -466,5 +560,52 @@ extern "C" fn callback(
     }
     if flush {
         let _ = state.tx.send(RawEvent::Flush);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LOST: u32 =
+        ffi::kFSEventStreamEventFlagMustScanSubDirs | ffi::kFSEventStreamEventFlagUserDropped;
+
+    #[test]
+    fn rescans_from_a_replay_are_requested_once_it_is_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mut events = Events::new(Arc::new(Roots::new(std::slice::from_ref(&root))), true);
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            assert!(!events.add(root.clone(), LOST, &mut out));
+        }
+        assert!(!events.add(root.join("a"), 0, &mut out));
+        assert!(!events.add(
+            root.join("b"),
+            ffi::kFSEventStreamEventFlagMustScanSubDirs,
+            &mut out
+        ));
+        assert_eq!(out, vec![RawEvent::Dirty(root.join("a"))]);
+        out.clear();
+        assert!(events.add(
+            PathBuf::new(),
+            ffi::kFSEventStreamEventFlagHistoryDone,
+            &mut out
+        ));
+        assert_eq!(
+            out,
+            vec![
+                RawEvent::Rescan(root.clone()),
+                RawEvent::Rescan(root.join("b"))
+            ]
+        );
+        // Live losses act at once; one at `/` covers every root.
+        out.clear();
+        events.add(root.clone(), LOST, &mut out);
+        events.add(PathBuf::from("/"), LOST, &mut out);
+        assert_eq!(out, vec![RawEvent::Rescan(root), RawEvent::RescanAll]);
+        assert_eq!(events.dropped, 2);
+        events.report_dropped();
+        assert_eq!(events.dropped, 0);
     }
 }
