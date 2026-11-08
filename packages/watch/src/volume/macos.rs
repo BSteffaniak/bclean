@@ -94,10 +94,73 @@ fn convert(s: &libc::statfs, at: i64) -> VolumeStats {
     }
 }
 
+/// `ATTR_VOL_SPACEUSED` of the APFS volume at `mount_point`: its own usage, where `statfs`
+/// reports the whole container's.
+pub fn own_used(mount_point: &Path) -> Option<u64> {
+    // getattrlist packs attributes at 4-byte alignment: the off_t follows the length directly.
+    #[repr(C, packed(4))]
+    struct Reply {
+        length: u32,
+        space_used: libc::off_t,
+    }
+    let c_path = CString::new(mount_point.as_os_str().as_bytes()).ok()?;
+    // SAFETY: an all-zero statfs is a valid value (plain integers and byte arrays).
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is NUL-terminated and `st` is a valid, writable statfs.
+    if unsafe { libc::statfs(c_path.as_ptr(), &raw mut st) } != 0
+        || c_str(&st.f_fstypename) != "apfs"
+    {
+        return None;
+    }
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: 0,
+        volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_SPACEUSED,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let mut reply = Reply {
+        length: 0,
+        space_used: 0,
+    };
+    // SAFETY: `request` asks only for ATTR_VOL_SPACEUSED, which the kernel writes as an off_t
+    // right after the u32 length, the layout of `Reply`; the buffer is exactly `Reply`-sized.
+    let rc = unsafe {
+        libc::getattrlist(
+            c_path.as_ptr(),
+            (&raw mut request).cast(),
+            (&raw mut reply).cast(),
+            std::mem::size_of::<Reply>(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let space_used = reply.space_used;
+    u64::try_from(space_used).ok()
+}
+
 fn c_str(buf: &[c_char]) -> String {
     let bytes: Vec<u8> = buf.iter().map(|c| c.cast_unsigned()).collect();
     CStr::from_bytes_until_nul(&bytes).map_or_else(
         |_| String::from_utf8_lossy(&bytes).into_owned(),
         |s| s.to_string_lossy().into_owned(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_volume_reports_its_own_usage() {
+        let Ok(stats) = volume_for(Path::new("/System/Volumes/Data")) else {
+            return;
+        };
+        let own = own_used(Path::new("/System/Volumes/Data")).expect("the data volume is APFS");
+        assert!(own > 0 && own <= stats.used(), "{own} vs {}", stats.used());
+    }
 }

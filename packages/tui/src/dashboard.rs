@@ -33,6 +33,7 @@ const WIDE: u16 = 110;
 const RECLAIMABLE: Color = Color::Yellow;
 const INDEXED: Color = Color::Blue;
 const OUTSIDE: Color = Color::Magenta;
+const OTHER_VOLUMES: Color = Color::Cyan;
 const FREE: Color = Color::BrightBlack;
 const SAFE: Style = Style::new().fg(Color::Green);
 const REVIEW: Style = Style::new().fg(Color::Yellow);
@@ -354,12 +355,23 @@ fn volume_rows(volume: &VolumeSummary, cx: &mut PaintCx<'_, '_>, inner: Rect, y:
         return;
     }
     let stats = &volume.stats;
-    let label = format!(
-        "{}  {} / {}",
-        stats.mount_point,
-        format::size(stats.used()),
-        format::size(stats.total)
-    );
+    // A volume sharing its disk (APFS): its own usage first, then the disk's.
+    let label = if volume.other_volumes() > 0 {
+        format!(
+            "{}  {} · disk {} / {}",
+            stats.mount_point,
+            format::size(volume.volume_used()),
+            format::size(stats.used()),
+            format::size(stats.total)
+        )
+    } else {
+        format!(
+            "{}  {} / {}",
+            stats.mount_point,
+            format::size(stats.used()),
+            format::size(stats.total)
+        )
+    };
     let label_width = u16::try_from(display_width(&label) + 2)
         .unwrap_or(u16::MAX)
         .min(inner.width / 2);
@@ -398,13 +410,17 @@ fn volume_rows(volume: &VolumeSummary, cx: &mut PaintCx<'_, '_>, inner: Rect, y:
         &styled(extra, MUTED),
     );
 
-    // Composition: reclaimable | other indexed | outside the index | free.
-    let segments = [
-        (volume.reclaimable, RECLAIMABLE, "reclaimable"),
+    // Composition: reclaimable | other indexed | outside the index | other volumes | free.
+    let segments: Vec<(u64, Color, &str)> = [
+        (volume.reclaimable_on_volume(), RECLAIMABLE, "reclaimable"),
         (volume.indexed_kept(), INDEXED, "rest of index"),
         (volume.outside_index(), OUTSIDE, "outside index"),
+        (volume.other_volumes(), OTHER_VOLUMES, "other volumes"),
         (stats.available, FREE, "free"),
-    ];
+    ]
+    .into_iter()
+    .filter(|&(bytes, _, name)| bytes > 0 || name != "other volumes")
+    .collect();
     if y + 1 < inner.height {
         stacked_bar(&segments, cx, row(inner, y + 1));
     }

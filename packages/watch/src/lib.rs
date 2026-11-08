@@ -18,4 +18,6 @@ pub use change::{
     ChangeBatch, ChangeSource, WatchBackend, WatchConfig, WatchCursor, WatchError, collapse_dirty,
     open_change_source,
 };
-pub use volume::{VolumeError, VolumeFilter, list_volumes, list_volumes_with, volume_for};
+pub use volume::{
+    VolumeError, VolumeFilter, list_volumes, list_volumes_with, volume_for, volume_own_used,
+};

@@ -54,20 +54,52 @@ pub struct VolumeSummary {
     pub growth_per_day: Option<i64>,
     /// Estimated seconds until the volume is full at `growth_per_day`, when growing.
     pub full_in_secs: Option<u64>,
+    /// Bytes used by this volume alone when it shares its capacity with other volumes (an
+    /// APFS container: the macOS data volume, the Nix store, the system volume, ...).
+    /// `stats.used()` then counts them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_used: Option<u64>,
 }
 
 impl VolumeSummary {
-    /// Used bytes outside every indexed root (system files, apps, other users, unindexed
-    /// directories).
+    /// Bytes used by this volume itself.
     #[must_use]
-    pub const fn outside_index(&self) -> u64 {
-        self.stats.used().saturating_sub(self.indexed)
+    pub fn volume_used(&self) -> u64 {
+        let used = self.stats.used();
+        self.own_used.map_or(used, |own| own.min(used))
+    }
+
+    /// Bytes used by other volumes sharing this one's capacity.
+    #[must_use]
+    pub fn other_volumes(&self) -> u64 {
+        self.stats.used().saturating_sub(self.volume_used())
+    }
+
+    /// Indexed bytes, at most what the volume uses: copy-on-write clones and hard links make
+    /// file sizes add up to more than the blocks they share.
+    #[must_use]
+    pub fn indexed_on_volume(&self) -> u64 {
+        self.indexed.min(self.volume_used())
+    }
+
+    /// Reclaimable bytes, at most [`VolumeSummary::indexed_on_volume`].
+    #[must_use]
+    pub fn reclaimable_on_volume(&self) -> u64 {
+        self.reclaimable.min(self.indexed_on_volume())
+    }
+
+    /// Bytes this volume uses outside every indexed root (system files, apps, other users,
+    /// unindexed directories).
+    #[must_use]
+    pub fn outside_index(&self) -> u64 {
+        self.volume_used().saturating_sub(self.indexed_on_volume())
     }
 
     /// Indexed bytes that are not reclaimable.
     #[must_use]
-    pub const fn indexed_kept(&self) -> u64 {
-        self.indexed.saturating_sub(self.reclaimable)
+    pub fn indexed_kept(&self) -> u64 {
+        self.indexed_on_volume()
+            .saturating_sub(self.reclaimable_on_volume())
     }
 }
 

@@ -593,6 +593,7 @@ fn sample_summary(volume: VolumeStats) -> DashboardSummary {
             trend_span_secs: 30 * 86_400,
             growth_per_day: Some(2 << 30),
             full_in_secs: Some(25 * 86_400),
+            own_used: None,
         }],
         roots: Vec::new(),
         reclaimable: ReclaimSummary {
@@ -871,6 +872,34 @@ fn dashboard_reports_paths_outside_the_browsed_tree() {
     assert_eq!(app.view(), View::Dashboard);
     let text = render_to_text(&mut app, 120, 40).join("\n");
     assert!(text.contains("is outside"), "{text}");
+}
+
+/// A volume sharing its disk (an APFS container) shows its own usage, and the disk's other
+/// volumes as their own segment rather than as part of it.
+#[test]
+fn dashboard_separates_volumes_sharing_a_disk() {
+    let mut summary = sample_summary(VolumeStats {
+        mount_point: "/System/Volumes/Data".into(),
+        fs_type: "apfs".into(),
+        total: 460 << 30,
+        free: 25 << 30,
+        available: 25 << 30,
+        purgeable: None,
+        at: 0,
+    });
+    let volume = &mut summary.volumes[0];
+    volume.own_used = Some(305 << 30);
+    volume.indexed = 311 << 30;
+    let (mut app, mut rx) = setup(backend().with_dashboard(summary));
+    press(&mut app, &mut rx, &[ch('D')]);
+    let text = render_to_text(&mut app, 200, 50).join("\n");
+    assert!(
+        text.contains("305.0 GiB · disk 435.0 GiB / 460.0 GiB"),
+        "{text}"
+    );
+    assert!(text.contains("other volumes 130.0 GiB"), "{text}");
+    // Clones make the index larger than the volume; it is capped, never "negative" outside.
+    assert!(text.contains("outside index 0 B"), "{text}");
 }
 
 #[test]

@@ -89,6 +89,26 @@ pub fn volume_for(path: &Path) -> Result<VolumeStats, VolumeError> {
     }
 }
 
+/// Bytes used by the volume mounted at `mount_point` alone, when it shares its capacity.
+///
+/// The volumes of an APFS container all report the container's usage through `statfs`, so
+/// [`VolumeStats::used`] cannot tell the user data volume from the Nix store or the system
+/// volume next to it. `None` where volumes don't share space, or if unknown.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn volume_own_used(mount_point: &Path) -> Option<u64> {
+    macos::own_used(mount_point)
+}
+
+/// Bytes used by the volume mounted at `mount_point` alone, when it shares its capacity.
+///
+/// Only APFS volumes share capacity; elsewhere this is always `None`.
+#[cfg(not(target_os = "macos"))]
+#[must_use]
+pub const fn volume_own_used(_mount_point: &Path) -> Option<u64> {
+    None
+}
+
 /// Current Unix time in seconds.
 #[allow(dead_code)] // unused on platforms without a volume backend
 pub(crate) fn now() -> i64 {

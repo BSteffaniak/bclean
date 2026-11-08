@@ -169,6 +169,7 @@ impl Engine {
             .filter_map(|slot| {
                 let state = slot.state.read();
                 Some(ScopedRoot {
+                    logical: logical(&slot.root),
                     path: slot.root.clone(),
                     tree: state.tree.clone()?,
                     classes: state.classes.clone(),
@@ -177,7 +178,7 @@ impl Engine {
                 })
             })
             .collect();
-        scope.sort_by_key(|r| r.path.components().count());
+        scope.sort_by_key(|r| r.logical.components().count());
         scope
     }
 
@@ -303,6 +304,8 @@ const fn severity_rank(severity: Severity) -> u8 {
 /// A loaded root in the dashboard's scope.
 struct ScopedRoot {
     path: PathBuf,
+    /// `path` through macOS firmlinks (see [`logical`]), for nesting comparisons.
+    logical: PathBuf,
     tree: std::sync::Arc<Tree>,
     classes: BTreeMap<PathBuf, Classification>,
     scanned_at: Option<i64>,
@@ -319,7 +322,10 @@ struct Item<'a> {
 /// Reclaimable classified paths, each from the deepest root containing it, without paths
 /// nested inside another listed path.
 fn collect_items(scope: &[ScopedRoot]) -> Vec<Item<'_>> {
-    let deepest = |path: &Path| scope.iter().rposition(|r| path.starts_with(&r.path));
+    let deepest = |path: &Path| {
+        let path = logical(path);
+        scope.iter().rposition(|r| path.starts_with(&r.logical))
+    };
     let mut items: Vec<Item<'_>> = scope
         .iter()
         .enumerate()
@@ -556,7 +562,7 @@ fn volume_summary(
         .filter(|&&i| {
             !counted
                 .iter()
-                .any(|&j| j != i && scope[i].path.starts_with(&scope[j].path))
+                .any(|&j| j != i && scope[i].logical.starts_with(&scope[j].logical))
         })
         .map(|&i| scope[i].tree.size(NodeId::ROOT, SizeMode::Allocated))
         .sum();
@@ -579,7 +585,9 @@ fn volume_summary(
         let secs = (stats.available as f64 / rate) as u64;
         secs
     });
+    let own_used = bclean_watch::volume_own_used(Path::new(&stats.mount_point));
     VolumeSummary {
+        own_used,
         stats,
         indexed,
         reclaimable,
@@ -588,6 +596,18 @@ fn volume_summary(
         growth_per_day,
         full_in_secs,
     }
+}
+
+/// `path` as macOS firmlinks present it: the data volume, mounted at `/System/Volumes/Data`,
+/// appears at `/`, so `/Users/me` lies inside a root opened at `/System/Volumes/Data`.
+/// Compared by spelling alone, the two roots overlap without nesting and are counted twice.
+fn logical(path: &Path) -> PathBuf {
+    if cfg!(target_os = "macos")
+        && let Ok(rest) = path.strip_prefix("/System/Volumes/Data")
+    {
+        return Path::new("/").join(rest);
+    }
+    path.to_path_buf()
 }
 
 #[cfg(unix)]
@@ -678,6 +698,22 @@ mod tests {
         assert_eq!(*trend.last().unwrap(), 5_000);
         assert_eq!(span, 60_000);
         assert_eq!(trend_points(&[], (10, 7)), (vec![7], 0));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn data_volume_roots_contain_their_firmlinked_paths() {
+        let data = logical(Path::new("/System/Volumes/Data"));
+        assert_eq!(data, Path::new("/"));
+        assert!(logical(Path::new("/Users/me")).starts_with(&data));
+        assert_eq!(
+            logical(Path::new("/System/Volumes/Data/Users/me/x")),
+            Path::new("/Users/me/x")
+        );
+        assert_eq!(
+            logical(Path::new("/System/Library")),
+            Path::new("/System/Library")
+        );
     }
 
     #[test]
