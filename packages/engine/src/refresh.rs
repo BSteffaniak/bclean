@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -423,20 +424,59 @@ pub fn reclassify(
         .collect();
     starts.sort();
     starts.dedup();
+    // Paths order component-wise, so a path's descendants directly follow it.
     let mut outer: Vec<PathBuf> = Vec::new();
     for start in starts {
-        if !outer.iter().any(|o| start.starts_with(o)) {
+        if !outer.last().is_some_and(|o| start.starts_with(o)) {
             outer.push(start);
         }
     }
     let staleness = StalenessEngine::with_defaults(unix_now());
     let classifier = Classifier::new(rules, &staleness);
     for start in outer {
-        classes.retain(|path, _| !path.starts_with(&start));
+        remove_under(classes, &start);
         if let Some(node) = tree.find(&start) {
             for entry in classifier.classify_subtree(tree, node) {
                 classes.insert(entry.path, entry.classification);
             }
         }
+    }
+}
+
+/// Removes `start` and every path below it from `map`.
+///
+/// Paths order component-wise, so they form one contiguous range: a busy directory changes
+/// hundreds of paths per batch, and scanning the whole map for each was quadratic.
+fn remove_under<V>(map: &mut BTreeMap<PathBuf, V>, start: &Path) {
+    let doomed: Vec<PathBuf> = map
+        .range::<Path, _>((Bound::Included(start), Bound::Unbounded))
+        .map(|(path, _)| path)
+        .take_while(|path| path.starts_with(start))
+        .cloned()
+        .collect();
+    for path in doomed {
+        map.remove(&path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_under_takes_exactly_the_subtree() {
+        let paths = [
+            "/a", "/a/b", "/a/b/x", "/a/b/x/y", "/a/b ", "/a/bc", "/a/c", "/b",
+        ];
+        let mut map: BTreeMap<PathBuf, usize> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (PathBuf::from(p), i))
+            .collect();
+        remove_under(&mut map, Path::new("/a/b"));
+        let left: Vec<&str> = map.keys().map(|p| p.to_str().unwrap()).collect();
+        assert_eq!(left, ["/a", "/a/b ", "/a/bc", "/a/c", "/b"]);
+        remove_under(&mut map, Path::new("/missing"));
+        assert_eq!(map.len(), 5);
     }
 }
