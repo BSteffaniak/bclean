@@ -128,9 +128,9 @@ impl Engine {
             .filter(|i| {
                 let staleness = &i.class.staleness;
                 if staleness.project_scoped {
-                    !staleness.stale || self.in_use(i.path).is_some()
+                    !staleness.stale || self.in_use(i.path, &i.class.action).is_some()
                 } else {
-                    self.running_inside(i.path).is_some()
+                    self.running_inside(i.path, &i.class.action).is_some()
                 }
             })
             .map(|i| i.path.to_path_buf())

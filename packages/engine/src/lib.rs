@@ -1464,20 +1464,21 @@ impl Engine {
         Plan::from_candidates(&candidates)
     }
 
-    /// Why `path` is in use right now, if it is:
+    /// Why `path`, to be cleaned with `action`, is in use right now, if it is:
     ///
-    /// * a process runs inside it (a database kept in `target/`), however idle, or
+    /// * a process runs inside it (a database kept in `target/`), however idle, unless inside
+    ///   a part the action keeps, or
     /// * a process doing something (not an idle shell, git UI, or agent session left open:
     ///   see [`bclean_actions::busy::ActivitySampler`]) works inside its project.
     ///
     /// The process list is refreshed at most every [`IN_USE_TTL`].
     #[must_use]
-    pub fn in_use(&self, path: &Path) -> Option<String> {
+    pub fn in_use(&self, path: &Path, action: &ActionSpec) -> Option<String> {
         let processes = self.processes();
         if processes.is_empty() {
             return None;
         }
-        if let Some(why) = self.running_inside(path) {
+        if let Some(why) = self.running_inside(path, action) {
             return Some(why);
         }
         let path = firmlinked(path);
@@ -1493,13 +1494,33 @@ impl Engine {
             .map(|p| format!("{} is working in {}", p.name, p.cwd.display()))
     }
 
-    /// Why `path` is in use by a process running inside it (however idle), if one does.
+    /// Why `path`, to be cleaned with `action`, is in use by a process running inside it
+    /// (however idle), if one does outside what the action keeps.
     #[must_use]
-    pub fn running_inside(&self, path: &Path) -> Option<String> {
+    pub fn running_inside(&self, path: &Path, action: &ActionSpec) -> Option<String> {
         let path = firmlinked(path);
+        let kept = match action {
+            ActionSpec::Trim { keep } => keep
+                .iter()
+                .filter_map(|k| globset::Glob::new(&k.glob).ok())
+                .fold(globset::GlobSetBuilder::new(), |mut set, glob| {
+                    set.add(glob);
+                    set
+                })
+                .build()
+                .ok(),
+            _ => None,
+        };
         self.processes()
             .iter()
-            .find(|p| p.cwd.starts_with(&path))
+            .find(|p| {
+                p.cwd.strip_prefix(&path).is_ok_and(|rel| {
+                    !kept.as_ref().is_some_and(|kept| {
+                        rel.ancestors()
+                            .any(|dir| !dir.as_os_str().is_empty() && kept.is_match(dir))
+                    })
+                })
+            })
             .map(|p| format!("{} runs inside it ({})", p.name, p.cwd.display()))
     }
 
@@ -1534,10 +1555,11 @@ impl Engine {
     pub fn automatic_candidates(&self) -> Vec<Candidate> {
         let mut candidates = self.all_candidates();
         candidates.retain(|c| {
+            let action = &c.classification.action;
             if c.classification.staleness.project_scoped {
-                self.in_use(&c.path).is_none()
+                self.in_use(&c.path, action).is_none()
             } else {
-                self.running_inside(&c.path).is_none()
+                self.running_inside(&c.path, action).is_none()
             }
         });
         candidates

@@ -302,8 +302,8 @@ async fn trim_paths_keep_release_binaries() {
 }
 
 /// What Cargo did not put in `target/` (a dev database) is never cleaned with it: the folder
-/// is trimmed around it, its size leaves it out, and a process running in it marks the folder
-/// in use.
+/// is trimmed around it, its size leaves it out, and a process running in it doesn't keep the
+/// rest from being cleaned.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn foreign_content_in_build_output_is_kept() {
@@ -339,10 +339,12 @@ async fn foreign_content_in_build_output_is_kept() {
         .spawn()
         .unwrap();
     // The engine's first look at processes samples them now, so the new one is seen.
-    let inside = engine.running_inside(&target);
+    let around_it = engine.running_inside(&target, &class.action);
+    let all_of_it = engine.running_inside(&target, &ActionSpec::Delete);
     db.kill().ok();
     db.wait().ok();
-    assert!(inside.is_some(), "a process in dev-db makes target in use");
+    assert!(around_it.is_none(), "the trim keeps dev-db, where it runs");
+    assert!(all_of_it.is_some(), "deleting all of target would hit it");
 
     let plan = engine.plan_for_paths(std::slice::from_ref(&target));
     let report = engine
