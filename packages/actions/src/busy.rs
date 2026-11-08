@@ -119,7 +119,11 @@ impl WorkingProcess {
 }
 
 /// Share of a core a process must have used since the previous sample to count as active.
-pub const ACTIVE_CPU_PERCENT: u64 = 1;
+///
+/// Programs left open idle (an editor, a git UI polling `git status`, an agent session
+/// between turns) were measured at 0.1-2%; a build, a test run, or an agent at work runs at
+/// tens of percent or more.
+pub const ACTIVE_CPU_PERCENT: u64 = 5;
 
 /// Gap between the two readings of [`ActivitySampler`]'s first sample.
 const FIRST_SAMPLE_GAP: Duration = Duration::from_millis(250);
