@@ -331,6 +331,7 @@ async fn unwatched_roots_opened_from_snapshots_are_rescanned() {
     .await
     .unwrap();
     reopened.ensure_scanned(&root, false).await.unwrap();
+    // The rescan races any check of the snapshot itself, so only its outcome is asserted.
     let has_web = || {
         reopened
             .tree(&root)
@@ -338,12 +339,11 @@ async fn unwatched_roots_opened_from_snapshots_are_rescanned() {
             .find(&root.join("web"))
             .is_some()
     };
-    assert!(has_web(), "the snapshot is shown first");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while has_web() && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(!has_web(), "then replaced by a rescan");
+    assert!(!has_web(), "the stale snapshot is replaced by a rescan");
 }
 
 /// Expanding a directory indexed by nested roots (`/` and `~`) must reach the outer root's
