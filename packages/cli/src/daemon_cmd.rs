@@ -19,21 +19,16 @@ use crate::output::size;
 /// * If another daemon is already listening, still holds the data directory after
 ///   [`LOCK_WAIT`], or the endpoint cannot be bound
 pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
+    // Checked before and after taking the lock: before, to fail at once next to a running
+    // daemon instead of waiting for it; after, because one may have started meanwhile.
+    ensure_not_listening(ctx).await?;
     let data_dir = ctx
         .options
         .data_dir
         .clone()
         .unwrap_or_else(|| ctx.dirs.data.clone());
     let _lock = lock_data_dir(&data_dir).await?;
-    let mut options = ctx.client_options();
-    options.autostart = false;
-    if let Ok(Some(client)) = Client::try_connect(&options).await {
-        bail!(
-            "a bclean daemon (pid {}) is already listening at {}",
-            client.server().pid,
-            ctx.endpoint()
-        );
-    }
+    ensure_not_listening(ctx).await?;
     let engine = ctx.engine().await?;
     log::info!(
         "bclean daemon {VERSION} starting (pid {}, data {})",
@@ -44,6 +39,20 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
         .await
         .context("running the daemon")?;
     log::info!("bclean daemon stopped");
+    Ok(())
+}
+
+/// Fails if a daemon is already listening on `ctx`'s endpoint.
+async fn ensure_not_listening(ctx: &Ctx) -> anyhow::Result<()> {
+    let mut options = ctx.client_options();
+    options.autostart = false;
+    if let Ok(Some(client)) = Client::try_connect(&options).await {
+        bail!(
+            "a bclean daemon (pid {}) is already listening at {}",
+            client.server().pid,
+            ctx.endpoint()
+        );
+    }
     Ok(())
 }
 
