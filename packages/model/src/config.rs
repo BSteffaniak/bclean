@@ -696,9 +696,10 @@ pub struct MonitorConfig {
     pub persist_interval: DurationSpec,
     /// Minimum time between re-measurements of one summarized directory (`node_modules`,
     /// `target`, ...) while changes keep arriving inside it, for example during a build.
+    /// Expensive re-measurements wait longer, within `rescan_budget_percent` of wall time.
     pub summary_refresh_interval: DurationSpec,
     /// Share of wall time (1-100) that rescans forced by lost change history may take, per
-    /// root. After a rescan that took `T`, the next waits `T × (100 / percent − 1)`, so a
+    /// root (re-measurements of summarized directories are held to the same share). After a rescan that took `T`, the next waits `T × (100 / percent − 1)`, so a
     /// 15s home-directory rescan at the default 5% runs at most every ~5 minutes however
     /// often the watcher loses events. Explicit rescans are not limited.
     pub rescan_budget_percent: u8,
@@ -717,7 +718,7 @@ impl Default for MonitorConfig {
             history_retention: DurationSpec::days(90),
             history_depth: 4,
             persist_interval: DurationSpec(std::time::Duration::from_mins(5)),
-            summary_refresh_interval: DurationSpec(std::time::Duration::from_mins(1)),
+            summary_refresh_interval: DurationSpec(std::time::Duration::from_mins(5)),
             rescan_budget_percent: 5,
         }
     }

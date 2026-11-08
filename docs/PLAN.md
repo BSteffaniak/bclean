@@ -89,7 +89,8 @@ alarms, and can auto-clean).
   are merged. Under heavy filesystem load FSEvents can lose history for a whole root every few
   seconds; unbudgeted, each loss cost a full home-directory scan on every core, back to back.
 - Changes inside a summarized directory (`target/` during a build) re-measure it at most once
-  per `monitor.summary_refresh_interval` (default 1m).
+  per `monitor.summary_refresh_interval` (default 5m), or less often when re-measuring
+  takes more than `monitor.rescan_budget_percent` of wall time.
 - bclean's own data, cache, and runtime directories are ignored by the watcher, so its snapshot
   and database writes never feed back into the index.
 - Incremental updates are saved when an IPC client needs the snapshot file (a request, or a
