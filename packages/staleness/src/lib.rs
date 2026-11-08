@@ -8,7 +8,8 @@
 //! produces a [`SignalReading`] (latest activity it saw and/or a "forces stale" verdict).
 //! [`combine`] folds readings into a [`Staleness`] verdict given an idle threshold:
 //!
-//! * `last_activity` = the newest activity across all readings
+//! * `last_activity` = the newest activity across all readings, except with a project-idle
+//!   threshold, where the `PROJECT_ACTIVITY` reading's is reported when there is one
 //! * `stale` = any reading `forces_stale`, **or** `now - last_activity >= threshold`, **or**
 //!   (when a project-idle threshold is given) the `PROJECT_ACTIVITY` reading alone is idle for
 //!   at least that long. Build output is touched by every build (editors run `cargo check` on
@@ -146,13 +147,20 @@ pub fn combine(signals: Vec<SignalReading>, policy: &StalenessPolicy, now: i64) 
     let idle_secs = last_activity.map(|last| idle(now, last));
     let forced = signals.iter().any(|s| s.forces_stale);
     let idle_stale = idle_secs.is_some_and(|i| i >= policy.threshold_secs);
-    let project_stale = policy.project_idle_secs.is_some_and(|limit| {
-        signals
-            .iter()
-            .find(|s| s.kind == SignalKind::ProjectActivity)
-            .and_then(|s| s.last_activity)
-            .is_some_and(|last| idle(now, last) >= limit)
-    });
+    let project_activity = signals
+        .iter()
+        .find(|s| s.kind == SignalKind::ProjectActivity)
+        .and_then(|s| s.last_activity);
+    let project_stale = policy
+        .project_idle_secs
+        .is_some_and(|limit| project_activity.is_some_and(|last| idle(now, last) >= limit));
+    // Build output is written by more than its owner working on it (a database kept in
+    // `target/`, an editor's background `cargo check`): its project's activity is the one
+    // that says when it was last used.
+    let (last_activity, idle_secs) = match project_activity {
+        Some(last) if policy.project_idle_secs.is_some() => (Some(last), Some(idle(now, last))),
+        _ => (last_activity, idle_secs),
+    };
     Staleness {
         stale: forced || idle_stale || project_stale,
         last_activity,
@@ -300,7 +308,9 @@ mod tests {
             1000,
         );
         assert!(s.stale);
-        assert_eq!(s.idle_secs, Some(10));
+        // The project's idle time is reported, not the build output's own last write.
+        assert_eq!(s.idle_secs, Some(200));
+        assert_eq!(s.last_activity, Some(800));
     }
 
     #[test]

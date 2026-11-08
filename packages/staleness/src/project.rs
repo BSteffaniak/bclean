@@ -9,9 +9,12 @@
 //!
 //! * the `HEAD` commit's committer time (read with `gix`)
 //! * the mtime of the `HEAD` reflog (`logs/HEAD`: commits, checkouts, rebases, resets)
-//! * the mtime of the git index (staging, and `git status` refreshes)
 //! * the newest source file mtime from a bounded walk that skips ephemeral directories
 //!   ([`DEFAULT_SKIP_DIRS`], dot-directories, and caller-provided names)
+//!
+//! The git index is deliberately left out: every `git status` (a shell prompt, a git UI, an
+//! agent) rewrites it, so it looks fresh while nobody works on the project. Staging edits
+//! sources, which the walk sees anyway.
 //!
 //! Results are cached per project root.
 
@@ -89,8 +92,6 @@ pub struct ProjectInfo {
     pub last_commit: Option<i64>,
     /// mtime of the `HEAD` reflog.
     pub reflog_mtime: Option<i64>,
-    /// mtime of the git index.
-    pub index_mtime: Option<i64>,
     /// Newest source mtime (bounded walk).
     pub newest_source: Option<i64>,
     /// Whether the source walk hit its limits.
@@ -101,15 +102,10 @@ impl ProjectInfo {
     /// Newest activity across all sources.
     #[must_use]
     pub fn last_activity(&self) -> Option<i64> {
-        [
-            self.last_commit,
-            self.reflog_mtime,
-            self.index_mtime,
-            self.newest_source,
-        ]
-        .into_iter()
-        .flatten()
-        .max()
+        [self.last_commit, self.reflog_mtime, self.newest_source]
+            .into_iter()
+            .flatten()
+            .max()
     }
 
     fn describe(&self) -> String {
@@ -119,9 +115,6 @@ impl ProjectInfo {
         }
         if let Some(t) = self.reflog_mtime {
             parts.push(format!("HEAD reflog {t}"));
-        }
-        if let Some(t) = self.index_mtime {
-            parts.push(format!("index {t}"));
         }
         if let Some(t) = self.newest_source {
             let partial = if self.source_walk_truncated {
@@ -235,7 +228,6 @@ impl ProjectActivityProvider {
         let reflog_mtime = git_dir
             .as_ref()
             .and_then(|d| git::mtime(&d.join("logs").join("HEAD")));
-        let index_mtime = git_dir.as_ref().and_then(|d| git::mtime(&d.join("index")));
         let skip = |name: &OsStr| {
             name.to_str()
                 .is_none_or(|n| n.starts_with('.') || self.skip.contains(n))
@@ -246,7 +238,6 @@ impl ProjectActivityProvider {
             root,
             last_commit,
             reflog_mtime,
-            index_mtime,
             newest_source: walk.max_mtime,
             source_walk_truncated: walk.truncated,
         }

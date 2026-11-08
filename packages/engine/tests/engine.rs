@@ -301,6 +301,69 @@ async fn trim_paths_keep_release_binaries() {
     );
 }
 
+/// What Cargo did not put in `target/` (a dev database) is never cleaned with it: the folder
+/// is trimmed around it, its size leaves it out, and a process running in it marks the folder
+/// in use.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn foreign_content_in_build_output_is_kept() {
+    use bclean_model::ActionSpec;
+    let (_dir, root, engine) = setup("").await;
+    let target = root.join("app/target");
+    write(&target.join("dev-db/data/base/1"), 300_000);
+    // A custom target layout (`target/nix/<hash>/debug`) is still Cargo's.
+    write(&target.join("nix/abc-rust/debug/.fingerprint/x"), 10);
+    write(&target.join("nix/abc-rust/debug/deps/libx.rlib"), 50_000);
+    engine.scan(&root).await.unwrap();
+
+    let class = engine
+        .classifications_under(&root)
+        .into_iter()
+        .find(|c| c.path == target)
+        .expect("app/target is classified")
+        .classification;
+    let ActionSpec::Trim { keep } = &class.action else {
+        panic!("expected a trim around dev-db, got {:?}", class.action);
+    };
+    assert!(keep.iter().any(|k| k.glob == "dev-db/**"), "{keep:?}");
+    assert!(!keep.iter().any(|k| k.glob.starts_with("nix")), "{keep:?}");
+    assert!(
+        class.size < 300_000,
+        "dev-db is left out of the size: {}",
+        class.size
+    );
+
+    let mut db = std::process::Command::new("sleep")
+        .arg("5")
+        .current_dir(target.join("dev-db/data"))
+        .spawn()
+        .unwrap();
+    // The engine's first look at processes samples them now, so the new one is seen.
+    let inside = engine.running_inside(&target);
+    db.kill().ok();
+    db.wait().ok();
+    assert!(inside.is_some(), "a process in dev-db makes target in use");
+
+    let plan = engine.plan_for_paths(std::slice::from_ref(&target));
+    let report = engine
+        .execute(plan, false, bclean_actions::CancelToken::new(), None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(report.results[0].outcome, bclean_actions::ItemOutcome::Done),
+        "{:?}",
+        report.results[0]
+    );
+    assert_eq!(
+        std::fs::read(target.join("dev-db/data/base/1"))
+            .unwrap()
+            .len(),
+        300_000
+    );
+    assert!(!target.join("nix").exists());
+    assert!(!target.join("debug").exists());
+}
+
 /// Losing change history for a whole root over and over (dropped events under heavy load)
 /// must not turn into back-to-back full scans.
 #[tokio::test(flavor = "multi_thread")]

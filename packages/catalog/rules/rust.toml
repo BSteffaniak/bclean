@@ -16,6 +16,15 @@ keep = [
   { glob = "release/*.{dylib,so,dll}" },
   { glob = "*/release/*.{dylib,so,dll}" },
 ]
+# What Cargo and its usual companions create in target/. Profile and target-triple directories
+# (custom ones included) are recognized by the markers Cargo leaves in them; anything else (a
+# dev database kept in target/) is never cleaned with it.
+owned = { names = [
+  "debug", "release", "doc", "package", "tmp", "build", "deps", "examples", "incremental",
+  ".fingerprint", "nextest", "criterion", "llvm-cov-target", "llvm-cov", "flycheck*",
+  "rust-analyzer", "rust-project.json", ".rustc_info.json", "CACHEDIR.TAG", ".cargo-lock",
+  ".package-cache",
+], markers = [".fingerprint", ".cargo-lock", "incremental", "CACHEDIR.TAG"] }
 [rules.cargo_target.match]
 name = ["target"]
 sibling_any = ["Cargo.toml"]

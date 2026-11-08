@@ -183,6 +183,7 @@ mod tests {
             "priority",
             "confidence",
             "keep",
+            "owned",
         ];
         const MATCH_KEYS: &[&str] = &[
             "kind",

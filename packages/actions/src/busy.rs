@@ -12,6 +12,7 @@
 //!   processes owned by the current user are visible without privileges). Windows has no cheap
 //!   API for this and the check is skipped.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -104,6 +105,8 @@ pub struct WorkingProcess {
     pub name: String,
     /// Current working directory.
     pub cwd: PathBuf,
+    /// CPU time used so far (user and system), where the platform reports it.
+    pub cpu_ns: Option<u64>,
 }
 
 impl WorkingProcess {
@@ -112,6 +115,60 @@ impl WorkingProcess {
     #[must_use]
     pub fn is_shell(&self) -> bool {
         SHELLS.contains(&self.name.trim_start_matches('-'))
+    }
+}
+
+/// Share of a core a process must have used since the previous sample to count as active.
+pub const ACTIVE_CPU_PERCENT: u64 = 1;
+
+/// Gap between the two readings of [`ActivitySampler`]'s first sample.
+const FIRST_SAMPLE_GAP: Duration = Duration::from_millis(250);
+
+/// Tells processes doing something from processes merely left open.
+///
+/// A git UI, an idle agent session, or a dev server nobody calls is open but idle: a process is
+/// active when it used at least [`ACTIVE_CPU_PERCENT`] of a core since the previous sample.
+#[derive(Debug, Default)]
+pub struct ActivitySampler {
+    last: Option<(std::time::Instant, BTreeMap<u32, u64>)>,
+}
+
+impl ActivitySampler {
+    /// Working processes, each with whether it is active. The first call reads twice,
+    /// [`FIRST_SAMPLE_GAP`] apart; later calls compare with the previous one. A process
+    /// whose CPU time is unknown counts as active.
+    pub fn sample(&mut self) -> Vec<(WorkingProcess, bool)> {
+        let (then, before) = self.last.take().unwrap_or_else(|| {
+            let first = Self::cpu_times(&working_processes());
+            std::thread::sleep(FIRST_SAMPLE_GAP);
+            first
+        });
+        let processes = working_processes();
+        let (now, cpu) = Self::cpu_times(&processes);
+        self.last = Some((now, cpu));
+        let budget = u64::try_from(now.duration_since(then).as_nanos()).unwrap_or(u64::MAX) / 100
+            * ACTIVE_CPU_PERCENT;
+        processes
+            .into_iter()
+            .map(|p| {
+                let active = match (p.cpu_ns, before.get(&p.pid)) {
+                    (Some(now), Some(before)) => now.saturating_sub(*before) >= budget,
+                    // New since the previous sample: started recently, so doing something.
+                    (Some(_), None) | (None, _) => true,
+                };
+                (p, active)
+            })
+            .collect()
+    }
+
+    fn cpu_times(processes: &[WorkingProcess]) -> (std::time::Instant, BTreeMap<u32, u64>) {
+        (
+            std::time::Instant::now(),
+            processes
+                .iter()
+                .filter_map(|p| p.cpu_ns.map(|cpu| (p.pid, cpu)))
+                .collect(),
+        )
     }
 }
 
@@ -139,7 +196,21 @@ pub const fn working_processes() -> Vec<WorkingProcess> {
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use std::path::Path;
+
     use super::WorkingProcess;
+
+    /// User plus system CPU time from `/proc/<pid>/stat` (fields 14 and 15, in clock ticks).
+    fn cpu_ns(proc_dir: &Path) -> Option<u64> {
+        let stat = std::fs::read_to_string(proc_dir.join("stat")).ok()?;
+        // The command name (field 2) may contain spaces; fields after it are plain.
+        let rest = &stat[stat.rfind(')')? + 1..];
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
+        // SAFETY: sysconf has no preconditions.
+        let per_sec = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
+        (per_sec > 0).then(|| ticks * 1_000_000_000 / per_sec)
+    }
 
     pub fn working_processes() -> Vec<WorkingProcess> {
         let own = std::process::id();
@@ -157,7 +228,13 @@ mod platform {
                 let name = std::fs::read_to_string(entry.path().join("comm"))
                     .map(|s| s.trim().to_owned())
                     .unwrap_or_default();
-                Some(WorkingProcess { pid, name, cwd })
+                let cpu_ns = cpu_ns(&entry.path());
+                Some(WorkingProcess {
+                    pid,
+                    name,
+                    cwd,
+                    cpu_ns,
+                })
             })
             .collect()
     }
@@ -184,6 +261,7 @@ mod platform {
                     pid: upid,
                     name: name_of(pid),
                     cwd,
+                    cpu_ns: cpu_ns(pid),
                 })
             })
             .collect()
@@ -232,6 +310,43 @@ mod platform {
             unsafe { std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), size_of_val(raw)) };
         let text = CStr::from_bytes_until_nul(bytes).ok()?.to_str().ok()?;
         (!text.is_empty()).then(|| PathBuf::from(text))
+    }
+
+    /// User plus system CPU time from `PROC_PIDTASKINFO` (in Mach time units, converted).
+    fn cpu_ns(pid: libc::c_int) -> Option<u64> {
+        // SAFETY: `proc_taskinfo` is a plain C struct for which all-zero bytes is valid.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(size_of::<libc::proc_taskinfo>()).ok()?;
+        // SAFETY: `info` is a valid, writable buffer of `size` bytes for this flavor.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTASKINFO,
+                0,
+                std::ptr::addr_of_mut!(info).cast(),
+                size,
+            )
+        };
+        if written != size {
+            return None;
+        }
+        let (numer, denom) = timebase();
+        let ticks = u128::from(info.pti_total_user) + u128::from(info.pti_total_system);
+        u64::try_from(ticks * u128::from(numer) / u128::from(denom.max(1))).ok()
+    }
+
+    /// Mach time units per nanosecond, as `numer / denom`.
+    #[allow(deprecated)] // libc points to the mach2 crate; one call doesn't justify it
+    fn timebase() -> (u32, u32) {
+        static TIMEBASE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+        *TIMEBASE.get_or_init(|| {
+            let mut info = libc::mach_timebase_info { numer: 1, denom: 1 };
+            // SAFETY: `info` is a valid, writable mach_timebase_info.
+            if unsafe { libc::mach_timebase_info(&raw mut info) } != 0 {
+                return (1, 1);
+            }
+            (info.numer, info.denom)
+        })
     }
 
     fn name_of(pid: libc::c_int) -> String {
@@ -324,5 +439,29 @@ mod tests {
             ..found
         };
         assert!(shell.is_shell());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_busy_process_is_active_and_a_sleeping_one_is_not() {
+        let mut sleeper = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        let mut spinner = std::process::Command::new("sh")
+            .args(["-c", "while :; do :; done"])
+            .spawn()
+            .unwrap();
+        let mut sampler = ActivitySampler::default();
+        let _ = sampler.sample();
+        std::thread::sleep(Duration::from_millis(300));
+        let sample = sampler.sample();
+        sleeper.kill().ok();
+        spinner.kill().ok();
+        sleeper.wait().ok();
+        spinner.wait().ok();
+        let active = |pid: u32| sample.iter().find(|(p, _)| p.pid == pid).map(|(_, a)| *a);
+        assert_eq!(active(sleeper.id()), Some(false));
+        assert_eq!(active(spinner.id()), Some(true));
     }
 }

@@ -6,8 +6,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use bclean_model::{
-    ActionSpec, Classification, Confidence, EphemeralSpec, Reason, RuleSpec, SignalKind,
-    SizeModeSpec, Staleness,
+    ActionSpec, Classification, Confidence, EphemeralSpec, KeepSpec, OwnedSpec, Reason, RuleSpec,
+    SignalKind, SizeModeSpec, Staleness,
 };
 use bclean_staleness::{StalenessEngine, StalenessPolicy, Target};
 use bclean_tree::{EntryKind, NodeFlags, NodeId, SizeMode, Tree};
@@ -281,6 +281,105 @@ pub fn trim(rules: &RuleSet, path: &Path, spec: &RuleSpec, class: &mut Classific
         ));
         class.action = ActionSpec::Trim { keep };
     }
+}
+
+/// Keeps what `spec`'s tool did not create inside the match at `path` (see
+/// [`RuleSpec::owned`]): the match is trimmed around it, and its size excludes it.
+pub fn keep_foreign(rules: &RuleSet, path: &Path, spec: &RuleSpec, class: &mut Classification) {
+    let Some(owned) = &spec.owned else {
+        return;
+    };
+    let foreign = foreign_entries(path, owned);
+    if foreign.is_empty() {
+        return;
+    }
+    let allocated = matches!(rules.size_mode, bclean_model::SizeModeSpec::Allocated);
+    let foreign_size: u64 = foreign
+        .iter()
+        .map(|name| crate::explain::measure(&path.join(name), allocated).0)
+        .sum();
+    let mut keep = match &class.action {
+        ActionSpec::Trim { keep } => keep.clone(),
+        _ => Vec::new(),
+    };
+    for name in &foreign {
+        let name = globset::escape(name);
+        keep.push(KeepSpec {
+            glob: name.clone(),
+            executable: false,
+        });
+        keep.push(KeepSpec {
+            glob: format!("{name}/**"),
+            executable: false,
+        });
+    }
+    class.reasons.push(Reason::new(
+        "FOREIGN",
+        format!(
+            "keeps {} ({}): not created by the rule's tool, so never cleaned with it",
+            foreign.join(", "),
+            bclean_model::ByteSize(foreign_size)
+        ),
+    ));
+    class.size = class.size.saturating_sub(foreign_size);
+    class.action = ActionSpec::Trim { keep };
+}
+
+/// Top-level entries of `dir` not created by the tool `owned` describes.
+pub fn foreign_entries(dir: &Path, owned: &OwnedSpec) -> Vec<String> {
+    let mut names = globset::GlobSetBuilder::new();
+    for pattern in &owned.names {
+        if let Ok(glob) = globset::Glob::new(pattern) {
+            names.add(glob);
+        }
+    }
+    let Ok(names) = names.build() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut foreign: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            let tools = names.is_match(&name) || (is_dir && holds_marker(&path, &owned.markers));
+            (!tools).then_some(name)
+        })
+        .collect();
+    foreign.sort();
+    foreign
+}
+
+/// Whether `dir` holds one of `markers` at most three levels down.
+fn holds_marker(dir: &Path, markers: &[String]) -> bool {
+    const MAX_DEPTH: usize = 3;
+    const MAX_DIRS: usize = 256;
+    let mut queue = std::collections::VecDeque::from([(dir.to_path_buf(), 0usize)]);
+    let mut visited = 0;
+    while let Some((current, depth)) = queue.pop_front() {
+        if markers
+            .iter()
+            .any(|m| current.join(m).symlink_metadata().is_ok())
+        {
+            return true;
+        }
+        visited += 1;
+        if depth + 1 >= MAX_DEPTH || visited >= MAX_DIRS {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                queue.push_back((entry.path(), depth + 1));
+            }
+        }
+    }
+    false
 }
 
 /// Staleness policy for a rule (or a durable suggestion when `spec` is `None`).
@@ -581,6 +680,7 @@ impl<'a> Classifier<'a> {
         let mut classification = assemble(spec, staleness, size, c.reasons);
         if let Some((_, spec)) = spec {
             trim(self.rules, &c.path, spec, &mut classification);
+            keep_foreign(self.rules, &c.path, spec, &mut classification);
         }
         Some(ClassifiedEntry {
             node: c.node,

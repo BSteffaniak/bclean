@@ -385,9 +385,8 @@ struct Inner {
     exec_lock: tokio::sync::Mutex<()>,
     /// Dashboard volume trends, keyed by mount point.
     volume_trends: Mutex<BTreeMap<String, dashboard::VolumeTrend>>,
-    /// Working directories of the user's non-shell processes, with when they were listed
-    /// (see [`Engine::in_use`]).
-    working: Mutex<Option<(Instant, WorkingDirs)>>,
+    /// The user's processes and whether each is doing something (see [`Engine::in_use`]).
+    working: Mutex<Working>,
     /// Drives indexed besides `monitor.index_roots` (see [`Engine::refresh_volume_roots`]).
     volume_roots: Mutex<Vec<PathBuf>>,
     /// [`EngineOptions::one_filesystem`].
@@ -460,7 +459,7 @@ impl Engine {
                 started_at: unix_now(),
                 watchers: Mutex::new(Vec::new()),
                 volume_trends: Mutex::new(BTreeMap::new()),
-                working: Mutex::new(None),
+                working: Mutex::new(Working::default()),
                 volume_roots: Mutex::new(Vec::new()),
                 one_filesystem: options.one_filesystem,
                 stopping: AtomicBool::new(false),
@@ -1465,14 +1464,21 @@ impl Engine {
         Plan::from_candidates(&candidates)
     }
 
-    /// Why the project owning `path` is in use right now, if it is: a process other than an
-    /// idle shell (an editor, an agent, a build, a running test) works inside it. The process
-    /// list is refreshed at most every [`IN_USE_TTL`].
+    /// Why `path` is in use right now, if it is:
+    ///
+    /// * a process runs inside it (a database kept in `target/`), however idle, or
+    /// * a process doing something (not an idle shell, git UI, or agent session left open:
+    ///   see [`bclean_actions::busy::ActivitySampler`]) works inside its project.
+    ///
+    /// The process list is refreshed at most every [`IN_USE_TTL`].
     #[must_use]
     pub fn in_use(&self, path: &Path) -> Option<String> {
-        let working = self.working_dirs();
-        if working.is_empty() {
+        let processes = self.processes();
+        if processes.is_empty() {
             return None;
+        }
+        if let Some(why) = self.running_inside(path) {
+            return Some(why);
         }
         let path = firmlinked(path);
         let home = self.inner.load.expander.home().map(Path::to_path_buf);
@@ -1481,37 +1487,58 @@ impl Engine {
             home.as_deref(),
             bclean_staleness::DEFAULT_PROJECT_MARKERS,
         )?;
-        working
+        processes
             .iter()
-            .find(|(_, cwd)| cwd.starts_with(&project))
-            .map(|(name, cwd)| format!("{name} is working in {}", cwd.display()))
+            .find(|p| p.active && !p.shell && p.cwd.starts_with(&project))
+            .map(|p| format!("{} is working in {}", p.name, p.cwd.display()))
     }
 
-    fn working_dirs(&self) -> WorkingDirs {
-        let mut cached = self.inner.working.lock();
-        if let Some((at, dirs)) = cached.as_ref()
+    /// Why `path` is in use by a process running inside it (however idle), if one does.
+    #[must_use]
+    pub fn running_inside(&self, path: &Path) -> Option<String> {
+        let path = firmlinked(path);
+        self.processes()
+            .iter()
+            .find(|p| p.cwd.starts_with(&path))
+            .map(|p| format!("{} runs inside it ({})", p.name, p.cwd.display()))
+    }
+
+    fn processes(&self) -> Arc<Vec<RunningProcess>> {
+        let mut working = self.inner.working.lock();
+        if let Some(at) = working.at
             && at.elapsed() < IN_USE_TTL
         {
-            return Arc::clone(dirs);
+            return Arc::clone(&working.processes);
         }
-        let dirs: WorkingDirs = Arc::new(
-            bclean_actions::busy::working_processes()
+        let processes: Arc<Vec<RunningProcess>> = Arc::new(
+            working
+                .sampler
+                .sample()
                 .into_iter()
-                .filter(|p| !p.is_shell())
-                .map(|p| (p.name, firmlinked(&p.cwd)))
+                .map(|(p, active)| RunningProcess {
+                    shell: p.is_shell(),
+                    name: p.name,
+                    cwd: firmlinked(&p.cwd),
+                    active,
+                })
                 .collect(),
         );
-        *cached = Some((Instant::now(), Arc::clone(&dirs)));
-        dirs
+        working.at = Some(Instant::now());
+        working.processes = Arc::clone(&processes);
+        processes
     }
 
-    /// Candidates an automatic clean may consider: every classified entry, except build output
-    /// of a project in use (see [`Engine::in_use`]).
+    /// Candidates an automatic clean may consider: every classified entry, except those a
+    /// process runs inside and build output of a project in use (see [`Engine::in_use`]).
     #[must_use]
     pub fn automatic_candidates(&self) -> Vec<Candidate> {
         let mut candidates = self.all_candidates();
         candidates.retain(|c| {
-            !c.classification.staleness.project_scoped || self.in_use(&c.path).is_none()
+            if c.classification.staleness.project_scoped {
+                self.in_use(&c.path).is_none()
+            } else {
+                self.running_inside(&c.path).is_none()
+            }
         });
         candidates
     }
@@ -1992,8 +2019,23 @@ impl Engine {
     }
 }
 
-/// Names and working directories of the user's non-shell processes.
-type WorkingDirs = Arc<Vec<(String, PathBuf)>>;
+/// The user's processes as last sampled (see [`Engine::in_use`]).
+#[derive(Debug, Default)]
+struct Working {
+    sampler: bclean_actions::busy::ActivitySampler,
+    at: Option<Instant>,
+    processes: Arc<Vec<RunningProcess>>,
+}
+
+/// One process of [`Working`].
+#[derive(Debug)]
+struct RunningProcess {
+    name: String,
+    cwd: PathBuf,
+    shell: bool,
+    /// Used CPU since the previous sample.
+    active: bool,
+}
 
 /// How long [`Engine::in_use`] reuses a process listing.
 const IN_USE_TTL: Duration = Duration::from_secs(30);

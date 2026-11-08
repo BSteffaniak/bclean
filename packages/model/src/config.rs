@@ -455,6 +455,21 @@ pub struct RuleSpec {
     pub confidence: Confidence,
     /// Outputs worth keeping when a match is cleaned inside a `[trim]` path.
     pub keep: Vec<KeepSpec>,
+    /// What the rule's tool creates inside a match. Anything else found there (a database
+    /// kept in `target/`) is foreign: always kept, and the match is trimmed around it instead
+    /// of cleaned by the rule's action.
+    pub owned: Option<OwnedSpec>,
+}
+
+/// What a tool creates inside its directory (see [`RuleSpec::owned`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OwnedSpec {
+    /// Top-level entries the tool creates, by name glob (`debug`, `.rustc_info.json`).
+    pub names: Vec<String>,
+    /// Entries only the tool creates (`.fingerprint`, `deps`): a top-level directory holding
+    /// one, up to three levels down, is the tool's (a custom profile or target layout).
+    pub markers: Vec<String>,
 }
 
 impl Default for RuleSpec {
@@ -471,6 +486,7 @@ impl Default for RuleSpec {
             priority: 0,
             confidence: Confidence::High,
             keep: Vec::new(),
+            owned: None,
         }
     }
 }

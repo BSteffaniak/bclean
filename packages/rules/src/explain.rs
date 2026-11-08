@@ -81,7 +81,7 @@ fn on_disk(meta: &std::fs::Metadata, _allocated: bool) -> u64 {
 }
 
 /// Total size of `path` (not following symlinks), bounded.
-fn measure(path: &Path, allocated: bool) -> (u64, bool) {
+pub fn measure(path: &Path, allocated: bool) -> (u64, bool) {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return (0, false);
     };
@@ -181,6 +181,7 @@ impl Classifier<'_> {
                 let staleness = self.engine.evaluate(&target, &policy);
                 let mut class = assemble(Some((rule.id(), rule.spec())), staleness, size, reasons);
                 crate::classify::trim(rules, &path, rule.spec(), &mut class);
+                crate::classify::keep_foreign(rules, &path, rule.spec(), &mut class);
                 class
             },
         );
