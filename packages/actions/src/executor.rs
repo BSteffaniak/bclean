@@ -21,7 +21,7 @@ use bclean_model::{ActionSpec, FallbackAction};
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{archive_to, move_path};
-use crate::busy::check_busy;
+use crate::busy::check_busy_except;
 use crate::journal::{JournalEntry, JournalOutcome, PerformedAction, UndoInfo, new_entry_id};
 use crate::plan::{EntryKind, Plan, PlanItem};
 use crate::protect::{Protector, expand_tilde, normalize};
@@ -281,10 +281,15 @@ impl Executor {
         if matches!(item.action, ActionSpec::Report) {
             return Err(SkipReason::ReportOnly);
         }
-        self.check_path(&item.path, item.kind)
+        self.check_path(&item.path, item.kind, &item.action)
     }
 
-    fn check_path(&self, path: &Path, expected: Option<EntryKind>) -> Result<(), SkipReason> {
+    fn check_path(
+        &self,
+        path: &Path,
+        expected: Option<EntryKind>,
+        action: &ActionSpec,
+    ) -> Result<(), SkipReason> {
         if let Some(why) = self.protector.check(path) {
             return Err(SkipReason::Protected(why));
         }
@@ -294,8 +299,19 @@ impl Executor {
         {
             return Err(SkipReason::TypeChanged { expected, found });
         }
-        if let Some(why) = check_busy(path, self.options.busy_window, self.options.check_processes)
-        {
+        // A trim leaves what it keeps alone, so a process working in there (a database kept
+        // in `target/`) doesn't stand in its way.
+        let keeper = match action {
+            ActionSpec::Trim { keep } => crate::trim::Keeper::new(keep).ok(),
+            _ => None,
+        };
+        let spared = |rel: &Path| keeper.as_ref().is_some_and(|k| k.keeps_tree(rel));
+        if let Some(why) = check_busy_except(
+            path,
+            self.options.busy_window,
+            self.options.check_processes,
+            &spared,
+        ) {
             return Err(SkipReason::Busy(why));
         }
         Ok(())
@@ -541,7 +557,7 @@ impl Executor {
             return Err(ActError::Fail(failure));
         }
         // The command may have partially run: re-check before falling back.
-        match self.check_path(path, item.kind) {
+        match self.check_path(path, item.kind, &item.action) {
             Ok(()) => {}
             Err(SkipReason::Missing) => {
                 return Ok(Performed {

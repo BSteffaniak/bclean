@@ -7,6 +7,9 @@
 //! binary keeps working from its usual path. Cargo hard-links `release/bcode` to a file under
 //! `deps/`; removing that link leaves the kept one intact.
 //!
+//! A directory matched by a pattern without the `executable` condition (`dev-db/**` keeps
+//! `dev-db`) is kept whole, empty subdirectories included, and never descended into.
+//!
 //! Symlinks are never followed: a link is kept or removed as an entry of its own.
 
 use std::fs::Metadata;
@@ -45,6 +48,20 @@ impl Keeper {
             set: set.build()?,
             executable: keep.iter().map(|k| k.executable).collect(),
         })
+    }
+
+    /// Whether the directory at `rel` (relative to the trimmed directory) is kept whole: it,
+    /// or a directory above it, matches a pattern without the `executable` condition.
+    #[must_use]
+    pub fn keeps_tree(&self, rel: &Path) -> bool {
+        rel.ancestors()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .any(|dir| {
+                self.set
+                    .matches(dir)
+                    .into_iter()
+                    .any(|i| !self.executable[i])
+            })
     }
 
     /// Whether the file at `rel` (relative to the trimmed directory) is kept.
@@ -104,7 +121,12 @@ fn trim_dir(
         let path = entry.path();
         let rel = rel.join(entry.file_name());
         let meta = std::fs::symlink_metadata(&path)?;
-        if meta.is_dir() {
+        if meta.is_dir() && keeper.keeps_tree(&rel) {
+            // Kept whole, empty directories included: a database's data directory needs them.
+            out.kept_bytes += tree_bytes(&path);
+            out.kept.push(rel);
+            remains = true;
+        } else if meta.is_dir() {
             if trim_dir(&path, &rel, keeper, cancel, removed, out)? {
                 remains = true;
             } else {
@@ -123,6 +145,28 @@ fn trim_dir(
         }
     }
     Ok(remains)
+}
+
+/// Bytes of the files under `dir` (unreadable entries count as empty).
+fn tree_bytes(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.path().symlink_metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
 }
 
 #[cfg(unix)]

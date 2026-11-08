@@ -55,6 +55,18 @@ const SIBLING_LOCKS: &[&str] = &[
 /// check.
 #[must_use]
 pub fn check_busy(path: &Path, window: Duration, check_processes: bool) -> Option<String> {
+    check_busy_except(path, window, check_processes, &|_| false)
+}
+
+/// Like [`check_busy`], ignoring processes working in a directory `spared` returns `true` for
+/// (relative to `path`): what a trim keeps, such as a database kept in `target/`.
+#[must_use]
+pub fn check_busy_except(
+    path: &Path,
+    window: Duration,
+    check_processes: bool,
+    spared: &dyn Fn(&Path) -> bool,
+) -> Option<String> {
     if !window.is_zero() {
         let now = SystemTime::now();
         let recent = |candidate: &Path| -> bool {
@@ -80,8 +92,17 @@ pub fn check_busy(path: &Path, window: Duration, check_processes: bool) -> Optio
             }
         }
     }
-    if check_processes && let Some(pid) = process_with_cwd_inside(path) {
-        return Some(format!("process {pid} has its working directory inside"));
+    if check_processes {
+        let target = std::fs::canonicalize(path).ok()?;
+        if let Some(p) = working_processes()
+            .into_iter()
+            .find(|p| p.cwd.strip_prefix(&target).is_ok_and(|rel| !spared(rel)))
+        {
+            return Some(format!(
+                "process {} ({}) has its working directory inside",
+                p.pid, p.name
+            ));
+        }
     }
     None
 }

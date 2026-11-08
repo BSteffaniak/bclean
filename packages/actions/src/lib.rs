@@ -349,6 +349,41 @@ mod tests {
         assert!(target.exists());
     }
 
+    /// A process working in what a trim keeps (a database in `target/dev-db`) doesn't block
+    /// the trim, while it does block deleting the whole directory.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn processes_in_kept_content_do_not_block_a_trim() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(target.join("dev-db/data")).unwrap();
+        std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+        std::fs::write(target.join("debug/deps/libx.rlib"), b"x").unwrap();
+        let mut db = std::process::Command::new("sleep")
+            .arg("5")
+            .current_dir(target.join("dev-db/data"))
+            .spawn()
+            .unwrap();
+        let exec = Executor::new(Protector::builtin(), ExecutorOptions::default());
+        let keep = vec![bclean_model::KeepSpec {
+            glob: "dev-db/**".to_owned(),
+            executable: false,
+        }];
+        let delete = exec.preflight(&plan_for(&[(&target, ActionSpec::Delete)]).items[0]);
+        let trim = plan_for(&[(&target, ActionSpec::Trim { keep })]);
+        let report = exec.execute(&trim, &CancelToken::new(), |_| {});
+        db.kill().ok();
+        db.wait().ok();
+        assert!(matches!(delete, Err(SkipReason::Busy(_))), "{delete:?}");
+        assert!(
+            matches!(report.results[0].outcome, ItemOutcome::Done),
+            "{:?}",
+            report.results[0]
+        );
+        assert!(target.join("dev-db/data").is_dir());
+        assert!(!target.join("debug").exists());
+    }
+
     #[test]
     fn report_never_acts_and_cancel_stops() {
         let dir = tempfile::tempdir().unwrap();
