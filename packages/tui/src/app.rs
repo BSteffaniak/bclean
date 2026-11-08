@@ -181,8 +181,10 @@ pub enum Modal {
         paths: Vec<PathBuf>,
         /// Requested action override.
         action: ActionOverride,
+        /// Items left out of the plan being rebuilt, carried over to it.
+        excluded: BTreeSet<PathBuf>,
     },
-    /// Plan preview / confirmation.
+    /// Plan review: a list of the items, the highlighted one's details, and confirmation.
     PlanPreview {
         /// The plan.
         plan: CleanPlan,
@@ -190,8 +192,10 @@ pub enum Modal {
         paths: Vec<PathBuf>,
         /// Action override used.
         action: ActionOverride,
-        /// Scroll offset of the item list.
-        scroll: usize,
+        /// Highlighted item.
+        cursor: usize,
+        /// Items left out (space toggles); only the others run.
+        excluded: BTreeSet<PathBuf>,
     },
     /// Execution progress, then the report.
     Execution(ExecState),
@@ -621,6 +625,7 @@ impl<B: Backend> App<B> {
             request_id,
             paths,
             action,
+            excluded,
         }) = self.modal.take()
         else {
             return; // cancelled or stale
@@ -630,6 +635,7 @@ impl<B: Backend> App<B> {
                 request_id,
                 paths,
                 action,
+                excluded,
             });
             return;
         }
@@ -637,7 +643,8 @@ impl<B: Backend> App<B> {
             plan,
             paths,
             action,
-            scroll: 0,
+            cursor: 0,
+            excluded,
         });
     }
 
@@ -726,8 +733,10 @@ impl<B: Backend> App<B> {
                     MouseEventKind::ScrollDown => 3,
                     _ => return Handled::Ignored,
                 };
-                if let Some(Modal::PlanPreview { scroll, .. }) = self.modal.as_mut() {
-                    *scroll = scroll.saturating_add_signed(delta);
+                if let Some(Modal::PlanPreview { plan, cursor, .. }) = self.modal.as_mut() {
+                    *cursor = cursor
+                        .saturating_add_signed(delta)
+                        .min(plan.items.len().saturating_sub(1));
                     return Handled::Redraw;
                 }
                 Handled::Ignored
@@ -1271,6 +1280,15 @@ impl<B: Backend> App<B> {
     }
 
     fn request_plan(&mut self, paths: Vec<PathBuf>, action: ActionOverride) {
+        self.request_plan_excluding(paths, action, BTreeSet::new());
+    }
+
+    fn request_plan_excluding(
+        &mut self,
+        paths: Vec<PathBuf>,
+        action: ActionOverride,
+        excluded: BTreeSet<PathBuf>,
+    ) {
         if paths.is_empty() {
             self.info("nothing selected", MessageLevel::Warning);
             return;
@@ -1281,6 +1299,7 @@ impl<B: Backend> App<B> {
             request_id,
             paths: paths.clone(),
             action: action.clone(),
+            excluded,
         });
         self.backend.build_plan(PlanRequest {
             request_id,
@@ -1364,12 +1383,14 @@ impl<B: Backend> App<B> {
                 plan,
                 paths,
                 action,
-                scroll,
+                cursor,
+                excluded,
             } => {
                 if close || key.ch() == Some('n') {
                     (None, Handled::Redraw)
                 } else {
-                    return self.handle_plan_preview_key(key, plan, paths, action, scroll);
+                    return self
+                        .handle_plan_preview_key(key, plan, paths, action, cursor, excluded);
                 }
             }
             Modal::Execution(mut exec) => {
@@ -1396,23 +1417,26 @@ impl<B: Backend> App<B> {
         handled
     }
 
+    #[allow(clippy::too_many_arguments)] // the modal's state, taken apart and put back
     fn handle_plan_preview_key(
         &mut self,
         key: &Key,
         plan: CleanPlan,
         paths: Vec<PathBuf>,
         action: ActionOverride,
-        scroll: usize,
+        cursor: usize,
+        mut excluded: BTreeSet<PathBuf>,
     ) -> Handled {
-        let page = self.viewport_rows.saturating_sub(8).max(1);
+        let page = self.viewport_rows.saturating_sub(14).max(1);
         let last = plan.items.len().saturating_sub(1);
-        let new_scroll = match (key.code, key.ch()) {
+        let mut cursor = cursor.min(last);
+        match (key.code, key.ch()) {
             (KeyCode::Enter, _) | (_, Some('y')) => {
-                self.start_execution(plan, false);
+                self.start_execution(included(plan, &excluded), false);
                 return Handled::Redraw;
             }
             (_, Some('t')) => {
-                self.start_execution(plan, true);
+                self.start_execution(included(plan, &excluded), true);
                 return Handled::Redraw;
             }
             (_, Some('a')) => {
@@ -1423,26 +1447,51 @@ impl<B: Backend> App<B> {
                     }
                     ActionOverride::Force(_) => ActionOverride::RuleDefault,
                 };
-                self.request_plan(paths, next);
+                self.request_plan_excluding(paths, next, excluded);
                 return Handled::Redraw;
             }
-            (KeyCode::Up, _) | (_, Some('k')) => Some(scroll.saturating_sub(1)),
-            (KeyCode::Down, _) | (_, Some('j')) => Some((scroll + 1).min(last)),
-            (KeyCode::PageUp, _) => Some(scroll.saturating_sub(page)),
-            (KeyCode::PageDown, _) => Some((scroll + page).min(last)),
-            _ => None,
-        };
+            (KeyCode::Space, _) => {
+                if let Some(item) = plan.items.get(cursor)
+                    && item.blocked.is_none()
+                    && !excluded.remove(&item.path)
+                {
+                    excluded.insert(item.path.clone());
+                }
+                cursor = (cursor + 1).min(last);
+            }
+            (_, Some('A')) => {
+                let actionable = plan.items.iter().filter(|i| i.blocked.is_none());
+                if excluded.is_empty() {
+                    excluded = actionable.map(|i| i.path.clone()).collect();
+                } else {
+                    excluded.clear();
+                }
+            }
+            (KeyCode::Up, _) | (_, Some('k')) => cursor = cursor.saturating_sub(1),
+            (KeyCode::Down, _) | (_, Some('j')) => cursor = (cursor + 1).min(last),
+            (KeyCode::PageUp, _) => cursor = cursor.saturating_sub(page),
+            (KeyCode::PageDown, _) => cursor = (cursor + page).min(last),
+            (KeyCode::Home, _) | (_, Some('g')) => cursor = 0,
+            (KeyCode::End, _) | (_, Some('G')) => cursor = last,
+            _ => {
+                self.modal = Some(Modal::PlanPreview {
+                    plan,
+                    paths,
+                    action,
+                    cursor,
+                    excluded,
+                });
+                return Handled::Ignored;
+            }
+        }
         self.modal = Some(Modal::PlanPreview {
             plan,
             paths,
             action,
-            scroll: new_scroll.unwrap_or(scroll),
+            cursor,
+            excluded,
         });
-        if new_scroll.is_some() {
-            Handled::Redraw
-        } else {
-            Handled::Ignored
-        }
+        Handled::Redraw
     }
 
     fn start_execution(&mut self, plan: CleanPlan, dry_run: bool) {
@@ -1485,6 +1534,12 @@ impl<B: Backend> App<B> {
             self.backend.request_classifications(wanted);
         }
     }
+}
+
+/// `plan` without the `excluded` items.
+fn included(mut plan: CleanPlan, excluded: &BTreeSet<PathBuf>) -> CleanPlan {
+    plan.items.retain(|item| !excluded.contains(&item.path));
+    plan
 }
 
 /// Normalized key: bmux reports letters lowercase with `shift`; this restores the character.

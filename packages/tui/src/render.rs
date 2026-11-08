@@ -4,7 +4,10 @@
 //! the [`crate::listing::ListingCache`].
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
+use bclean_model::ActionSpec;
 use bclean_tree::{EntryKind, NodeFlags, NodeId, Tree};
 use bmux_tui::composition::TextBlock;
 use bmux_tui::geometry::{Insets, Rect, Size};
@@ -16,7 +19,7 @@ use bmux_tui_components::breadcrumbs::{
     BreadcrumbItem, BreadcrumbsComponent, BreadcrumbsPolicy, BreadcrumbsState,
 };
 use bmux_tui_components::key_hint_bar::{KeyHint, KeyHintBarComponent};
-use bmux_tui_components::labeled_details::{DetailItem, LabeledDetailsComponent};
+use bmux_tui_components::labeled_details::{DetailItem, LabelPlacement, LabeledDetailsComponent};
 use bmux_tui_components::modal_frame::{ModalFrame, ModalFrameComponent, ModalSizing, ModalTheme};
 use bmux_tui_components::pane::{Pane, PaneComponent, PaneState};
 use bmux_tui_components::progress_bar::{
@@ -27,7 +30,7 @@ use bmux_tui_components::tab_bar::{TabBarComponent, TabBarPolicy, TabBarState, T
 use bmux_tui_components::uniform_list::UniformList;
 
 use crate::app::{App, ExecState, MessageLevel, Modal, View};
-use crate::backend::{ActionOverride, Backend, BackendMode, CleanPlan, ItemOutcome};
+use crate::backend::{ActionOverride, Backend, BackendMode, CleanPlan, ItemOutcome, PlanItem};
 use crate::format;
 use crate::listing::{Lens, SortBy};
 
@@ -790,30 +793,58 @@ fn render_modal<B: Backend>(app: &App<B>, modal: &Modal, cx: &mut PaintCx<'_, '_
         Modal::PlanPreview {
             plan,
             action,
-            scroll,
+            cursor,
+            excluded,
             ..
-        } => {
-            let frame = modal_frame(
-                &format!(
-                    "Clean plan — {} item(s), est. {}",
-                    plan.actionable(),
-                    format::size(plan.estimated_bytes())
-                ),
-                Size::new(
-                    full.width.saturating_sub(4).min(110),
-                    full.height.saturating_sub(2),
-                ),
-            );
-            let width = usize::from(full.width.saturating_sub(10).min(104));
-            paint_text_modal(cx, full, frame, plan_lines(plan, action, width), *scroll);
-        }
+        } => render_plan_review(plan, action, *cursor, excluded, cx, full),
         Modal::Execution(exec) => render_execution(exec, cx, full),
     }
 }
 
-fn plan_lines(plan: &CleanPlan, action: &ActionOverride, width: usize) -> Vec<Line> {
-    let mut lines = vec![
-        Line::from_spans(vec![
+/// The plan review: a summary, the item list (cursor, checkbox, size, action, path), the
+/// highlighted item's details in full, and the keys.
+fn render_plan_review(
+    plan: &CleanPlan,
+    action: &ActionOverride,
+    cursor: usize,
+    excluded: &BTreeSet<PathBuf>,
+    cx: &mut PaintCx<'_, '_>,
+    full: Rect,
+) {
+    let chosen: Vec<&PlanItem> = plan
+        .items
+        .iter()
+        .filter(|i| i.blocked.is_none() && !excluded.contains(&i.path))
+        .collect();
+    let bytes = chosen
+        .iter()
+        .map(|i| i.estimated_bytes)
+        .fold(0, u64::saturating_add);
+    let frame = modal_frame(
+        &format!(
+            "Clean plan — {} of {} item(s), est. {}",
+            chosen.len(),
+            plan.items.len(),
+            format::size(bytes)
+        ),
+        Size::new(
+            full.width.saturating_sub(4).min(140),
+            full.height.saturating_sub(2),
+        ),
+    );
+    let area = frame.content_area(full);
+    cx.paint_component(
+        &ModalFrameComponent::new("modal", frame, TextBlock::new(Text::default())),
+        full,
+    );
+    if area.height < 8 {
+        return;
+    }
+    let width = usize::from(area.width);
+    write(
+        cx,
+        row(area, 0),
+        &Line::from_spans(vec![
             Span::styled("action: ", MUTED),
             Span::styled(
                 match action {
@@ -824,61 +855,165 @@ fn plan_lines(plan: &CleanPlan, action: &ActionOverride, width: usize) -> Vec<Li
                     .fg(Color::BrightYellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("   (a to change)", MUTED),
+            Span::styled("  (a to change)", MUTED),
         ]),
-        Line::from_spans(vec![
-            Span::styled("enter/y", Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled(" execute   ", MUTED),
-            Span::styled("t", Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled(" dry run   ", MUTED),
-            Span::styled("esc/n", Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled(" cancel", MUTED),
-        ]),
-        Line::default(),
-    ];
-    for item in &plan.items {
-        let path_width = width.saturating_sub(36);
-        let (style, status) = item.blocked.as_ref().map_or_else(
-            || (Style::new(), String::new()),
-            |reason| {
-                (
-                    MUTED.add_modifier(Modifier::CROSSED_OUT),
-                    format!("  skip: {reason}"),
-                )
-            },
+    );
+
+    // Rows: summary, blank, list, separator, details, keys.
+    let details_height = (area.height / 3).clamp(5, 10);
+    let list_height = area.height.saturating_sub(details_height + 4);
+    let list_top = 2;
+    let len = plan.items.len();
+    let visible = usize::from(list_height);
+    let cursor = cursor.min(len.saturating_sub(1));
+    // Keep the cursor in view, centered once the list is longer than the window.
+    let first = cursor
+        .saturating_sub(visible / 2)
+        .min(len.saturating_sub(visible));
+    for (offset, (index, item)) in plan
+        .items
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .enumerate()
+    {
+        let y = list_top + u16::try_from(offset).unwrap_or(u16::MAX);
+        let selected = index == cursor;
+        let base = if selected { SELECTED } else { Style::new() };
+        cx.fill(rect_local(row(area, y)), " ", base);
+        write(
+            cx,
+            row(area, y),
+            &plan_row(item, selected, excluded.contains(&item.path), width),
         );
-        let mut spans = vec![
-            Span::styled(
-                format!("{:>10}  ", format::size(item.estimated_bytes)),
-                Style::new().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "{:<12} ",
-                    truncate_to_display_width(&format::action(&item.action), 12)
-                ),
-                Style::new().fg(if matches!(item.action, bclean_model::ActionSpec::Delete) {
-                    Color::Red
-                } else {
-                    Color::Yellow
-                }),
-            ),
-            Span::styled(
-                format::truncate_left(&item.path.display().to_string(), path_width),
-                style,
-            ),
-        ];
-        if !status.is_empty() {
-            spans.push(Span::styled(status, Style::new().fg(Color::Yellow)));
-        } else if let Some(note) = &item.note {
-            spans.push(Span::styled(format!("  {note}"), MUTED));
+    }
+    if len == 0 {
+        write(cx, row(area, list_top), &styled("(empty plan)", MUTED));
+    }
+
+    let separator_y = list_top + list_height;
+    write(
+        cx,
+        row(area, separator_y),
+        &details_separator(cursor, len, visible, width),
+    );
+    if let Some(item) = plan.items.get(cursor) {
+        let lines = plan_details(item, excluded.contains(&item.path), area.width);
+        for (offset, line) in lines.iter().take(usize::from(details_height)).enumerate() {
+            let y = separator_y + 1 + u16::try_from(offset).unwrap_or(u16::MAX);
+            write(cx, row(area, y), line);
         }
-        lines.push(Line::from_spans(spans));
     }
-    if plan.items.is_empty() {
-        lines.push(styled("(empty plan)", MUTED));
+    write(cx, row(area, area.height - 1), &plan_keys());
+}
+
+/// The rule above the details, with the cursor's position when the list scrolls.
+fn details_separator(cursor: usize, len: usize, visible: usize, width: usize) -> Line {
+    let position = if len > visible {
+        format!(" {} of {len} ", cursor + 1)
+    } else {
+        String::new()
+    };
+    styled(
+        format!(
+            "─ details {}{position}",
+            "─".repeat(width.saturating_sub(10 + position.chars().count()))
+        ),
+        MUTED,
+    )
+}
+
+/// One row of the plan list.
+fn plan_row(item: &PlanItem, selected: bool, left_out: bool, width: usize) -> Line {
+    let base = if selected { SELECTED } else { Style::new() };
+    let (check, check_style) = match (&item.blocked, left_out) {
+        (Some(_), _) => ("  – ", Style::new().fg(Color::Yellow)),
+        (None, true) => ("[ ] ", MUTED),
+        (None, false) => ("[x] ", Style::new().fg(Color::Green)),
+    };
+    let size = format!("{:>10}  ", format::size(item.estimated_bytes));
+    let label = format!(
+        "{:<14}  ",
+        truncate_to_display_width(&format::action_label(&item.action), 14)
+    );
+    let tail = if item.blocked.is_some() {
+        "  skipped"
+    } else {
+        ""
+    };
+    let path_width = width
+        .saturating_sub(6 + display_width(&size) + display_width(&label) + display_width(tail));
+    let path_style = if item.blocked.is_some() || left_out {
+        MUTED
+    } else {
+        Style::new()
+    };
+    Line::from_spans(vec![
+        Span::styled(if selected { "› " } else { "  " }, base.fg(ACCENT)),
+        Span::styled(check, base.patch(check_style)),
+        Span::styled(size, base.add_modifier(Modifier::BOLD)),
+        Span::styled(
+            label,
+            base.fg(if matches!(item.action, ActionSpec::Delete) {
+                Color::Red
+            } else {
+                Color::Yellow
+            }),
+        ),
+        Span::styled(
+            format!(
+                "{:<path_width$}",
+                format::truncate_left(&item.path.display().to_string(), path_width)
+            ),
+            base.patch(path_style),
+        ),
+        Span::styled(tail, base.fg(Color::Yellow)),
+    ])
+}
+
+/// The highlighted plan item in full.
+fn plan_details(item: &PlanItem, left_out: bool, width: u16) -> Vec<Line> {
+    let status = match (&item.blocked, left_out) {
+        (Some(reason), _) => format!("skipped: {reason}"),
+        (None, true) => "left out (space to include)".to_owned(),
+        (None, false) => "included (space to leave out)".to_owned(),
+    };
+    let mut items = vec![
+        DetailItem::new("Path", item.path.display().to_string()),
+        DetailItem::new("Action", format::action_detail(&item.action, &item.path)),
+        DetailItem::new("Frees", format!("~{}", format::size(item.estimated_bytes))),
+        DetailItem::new("Status", status),
+    ];
+    if let Some(note) = &item.note {
+        items.push(DetailItem::new("Note", note.clone()));
     }
-    lines
+    LabeledDetailsComponent::new("plan.details", &items)
+        .item_spacing(false)
+        .label_placement(LabelPlacement::Beside)
+        .lines(width.max(10))
+}
+
+/// Keys of the plan review.
+fn plan_keys() -> Line {
+    let key = |k: &str| Span::styled(k.to_owned(), Style::new().add_modifier(Modifier::BOLD));
+    let hint = |h: &str| Span::styled(h.to_owned(), MUTED);
+    Line::from_spans(vec![
+        key("↑↓"),
+        hint(" move  "),
+        key("space"),
+        hint(" include/leave out  "),
+        key("A"),
+        hint(" all/none  "),
+        key("enter"),
+        hint(" clean  "),
+        key("t"),
+        hint(" dry run  "),
+        key("a"),
+        hint(" action  "),
+        key("esc"),
+        hint(" cancel"),
+    ])
 }
 
 #[allow(clippy::too_many_lines)] // progress, report, and item log in one modal

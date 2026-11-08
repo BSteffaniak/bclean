@@ -548,6 +548,52 @@ fn size_bars_are_scaled_to_the_whole_listing() {
     );
 }
 
+/// The plan review is a list: arrows move a cursor (not the whole modal), the highlighted
+/// item's details are shown in full, and space leaves items out of the clean.
+#[test]
+fn plan_review_moves_a_cursor_shows_details_and_leaves_items_out() {
+    let (mut app, mut rx) = setup(backend());
+    press(
+        &mut app,
+        &mut rx,
+        &[key(KeyCode::Space), key(KeyCode::Space), ch('p')],
+    );
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(text.contains("Clean plan — 2 of 2 item(s)"), "{text}");
+    assert!(text.contains("[x]") && text.contains("details"), "{text}");
+    assert!(text.contains("Path") && text.contains("Action"), "{text}");
+
+    press(&mut app, &mut rx, &[key(KeyCode::Down)]);
+    let Some(Modal::PlanPreview { plan, cursor, .. }) = app.modal().cloned() else {
+        panic!("expected plan review, got {:?}", app.modal());
+    };
+    assert_eq!(cursor, 1);
+    let second = plan.items[1].path.clone();
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(text.contains(&second.display().to_string()), "{text}");
+
+    // Space leaves the highlighted item out; enter cleans only the rest.
+    press(&mut app, &mut rx, &[key(KeyCode::Space)]);
+    let Some(Modal::PlanPreview { excluded, .. }) = app.modal().cloned() else {
+        panic!("expected plan review");
+    };
+    assert!(excluded.contains(&second));
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(
+        text.contains("1 of 2 item(s)") && text.contains("[ ]"),
+        "{text}"
+    );
+    press(&mut app, &mut rx, &[key(KeyCode::Enter)]);
+    let Some(Modal::Execution(exec)) = app.modal().cloned() else {
+        panic!("expected execution");
+    };
+    assert_eq!(exec.report.expect("report").done, 1);
+    assert!(
+        app.tree().unwrap().find(&second).is_some(),
+        "left out, so kept"
+    );
+}
+
 #[test]
 fn render_modals_and_dashboard() {
     let (mut app, mut rx) = setup(dashboard_backend());

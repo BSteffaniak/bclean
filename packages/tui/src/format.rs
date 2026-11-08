@@ -165,6 +165,74 @@ pub fn action(spec: &ActionSpec) -> String {
     }
 }
 
+/// The action's few-word label for a list row: the command itself, or the verb.
+#[must_use]
+pub fn action_label(spec: &ActionSpec) -> String {
+    match spec {
+        ActionSpec::Command { run, .. } => run.clone(),
+        ActionSpec::Trim { .. } => "trim".to_owned(),
+        ActionSpec::Archive { .. } => "archive".to_owned(),
+        ActionSpec::Move { .. } => "move".to_owned(),
+        other => action(other),
+    }
+}
+
+/// What the action does to `path`, in full: the command with its working directory and
+/// fallback, or what a trim keeps.
+#[must_use]
+#[allow(clippy::literal_string_with_formatting_args)] // `{path}`, ... are action placeholders
+pub fn action_detail(spec: &ActionSpec, path: &std::path::Path) -> String {
+    use bclean_model::FallbackAction;
+    let fill = |template: &str| {
+        let parent = path.parent().unwrap_or(path);
+        template
+            .replace("{path}", &path.display().to_string())
+            .replace("{parent}", &parent.display().to_string())
+            .replace(
+                "{name}",
+                &path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            )
+    };
+    match spec {
+        ActionSpec::Delete => "delete permanently (frees the space now)".to_owned(),
+        ActionSpec::Trash => "move to the trash (undoable; frees space once emptied)".to_owned(),
+        ActionSpec::Command { run, cwd, fallback } => {
+            let dir = fill(cwd.as_deref().unwrap_or("{parent}"));
+            let fallback = match fallback {
+                FallbackAction::None => "nothing else is done",
+                FallbackAction::Delete => "it is deleted instead",
+                FallbackAction::Trash => "it is moved to the trash instead",
+            };
+            format!("run `{}` in {dir}; if that fails, {fallback}", fill(run))
+        }
+        ActionSpec::Archive { dest } => format!("archive into {}, then delete", fill(dest)),
+        ActionSpec::Move { dest } => format!("move into {}", fill(dest)),
+        ActionSpec::Report => "report only; never acted on".to_owned(),
+        ActionSpec::Trim { keep } => {
+            let kept: Vec<String> = keep
+                .iter()
+                .map(|k| {
+                    if k.executable {
+                        format!("executables matching {}", k.glob)
+                    } else {
+                        k.glob.clone()
+                    }
+                })
+                .collect();
+            format!(
+                "delete everything inside except {}",
+                if kept.is_empty() {
+                    "nothing".to_owned()
+                } else {
+                    kept.join(", ")
+                }
+            )
+        }
+    }
+}
+
 /// Score with sensible precision.
 #[must_use]
 pub fn score(value: f64) -> String {
