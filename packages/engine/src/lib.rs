@@ -957,7 +957,9 @@ impl Engine {
     ///
     /// * Inside a loaded root: reuses it (with `force`, rescans `path` and grafts it).
     /// * Otherwise (including a drive mounted inside a loaded root) `path` becomes a root: its
-    ///   persisted snapshot is loaded unless `force`, else it is scanned.
+    ///   persisted snapshot is loaded unless `force`, else it is scanned. A snapshot of a root
+    ///   no change source watches can be arbitrarily old, so it is shown at once and rescanned
+    ///   in the background (`TREE_UPDATED` announces the result).
     ///
     /// # Errors
     ///
@@ -976,9 +978,23 @@ impl Engine {
             return self.require_ref(&root);
         }
         if !force && self.load_snapshot_locked(&slot).await?.is_some() {
+            if !self.is_watched(&root) {
+                let engine = self.clone();
+                let root = root.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = engine.scan(&root).await {
+                        log::warn!("refreshing {} failed: {e}", root.display());
+                    }
+                });
+            }
             return self.require_ref(&root);
         }
         Ok(self.full_scan_locked(&slot, None).await?.snapshot)
+    }
+
+    /// Whether a change source keeps `root` current (an index root of a running daemon).
+    fn is_watched(&self, root: &Path) -> bool {
+        !self.inner.watchers.lock().is_empty() && self.index_roots().iter().any(|r| r == root)
     }
 
     /// Classified entries at or under `path` (from the loaded tree), highest score first.

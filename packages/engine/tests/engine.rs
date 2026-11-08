@@ -311,6 +311,41 @@ async fn snapshots_keep_the_cursor_from_before_unreconciled_losses() {
     assert_eq!(saved().await, cursor(3));
 }
 
+/// A root nothing watches (one opened ad hoc, like `bclean /`) is shown from its snapshot at
+/// once, then rescanned: the snapshot may be days old.
+#[tokio::test(flavor = "multi_thread")]
+async fn unwatched_roots_opened_from_snapshots_are_rescanned() {
+    let (dir, root, engine) = setup("").await;
+    engine.scan(&root).await.unwrap();
+    std::fs::remove_dir_all(root.join("web")).unwrap();
+
+    let home = std::fs::canonicalize(dir.path()).unwrap().join("home");
+    let reopened = Engine::open(EngineOptions {
+        load: LoadOptions::new(
+            root.clone(),
+            Expander::new(Some(home.clone()), BTreeMap::new()),
+        ),
+        data_dir: Some(home.join("data")),
+        one_filesystem: true,
+    })
+    .await
+    .unwrap();
+    reopened.ensure_scanned(&root, false).await.unwrap();
+    let has_web = || {
+        reopened
+            .tree(&root)
+            .unwrap()
+            .find(&root.join("web"))
+            .is_some()
+    };
+    assert!(has_web(), "the snapshot is shown first");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while has_web() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!has_web(), "then replaced by a rescan");
+}
+
 /// Expanding a directory indexed by nested roots (`/` and `~`) must reach the outer root's
 /// tree too: a client browsing `/` waits for that tree to change.
 #[tokio::test(flavor = "multi_thread")]
