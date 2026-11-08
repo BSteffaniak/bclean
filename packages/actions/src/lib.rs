@@ -42,6 +42,7 @@ pub mod protect;
 pub mod remove;
 pub mod shell;
 pub mod space;
+pub mod trim;
 mod undo;
 
 pub use executor::{

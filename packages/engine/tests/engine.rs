@@ -243,6 +243,64 @@ async fn automatic_cleaning_skips_build_output_of_active_projects() {
     assert!(!summary.reclaimable.safe_paths.contains(&target));
 }
 
+/// Inside a `[trim]` path, cleaning a Cargo `target/` keeps its release binaries; elsewhere
+/// the rule's own action (`cargo clean`) applies.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn trim_paths_keep_release_binaries() {
+    use bclean_model::ActionSpec;
+    use std::os::unix::fs::PermissionsExt as _;
+    let (_dir, root, engine) = setup("[trim]\npaths = [\"**/app\"]\n").await;
+    let release = root.join("app/target/release");
+    write(&release.join("app"), 1_000);
+    std::fs::set_permissions(release.join("app"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    write(&release.join("deps/app-0123"), 5_000);
+    write(&root.join("lib/Cargo.toml"), 10);
+    write(&root.join("lib/target/release/lib"), 1_000);
+    engine.scan(&root).await.unwrap();
+
+    let plan = engine.plan_for_paths(&[root.join("app/target"), root.join("lib/target")]);
+    let action = |path: &Path| {
+        plan.items
+            .iter()
+            .find(|i| i.path == path)
+            .map(|i| i.action.clone())
+            .unwrap()
+    };
+    assert!(matches!(
+        action(&root.join("app/target")),
+        ActionSpec::Trim { .. }
+    ));
+    assert!(matches!(
+        action(&root.join("lib/target")),
+        ActionSpec::Command { .. }
+    ));
+
+    let mut trim_only = plan.clone();
+    trim_only
+        .items
+        .retain(|i| i.path == root.join("app/target"));
+    let report = engine
+        .execute(trim_only, false, bclean_actions::CancelToken::new(), None)
+        .await
+        .unwrap();
+    let result = &report.results[0];
+    assert!(
+        matches!(result.outcome, bclean_actions::ItemOutcome::Done),
+        "{result:?}"
+    );
+    assert!(release.join("app").is_file(), "the release binary stays");
+    assert!(!release.join("deps").exists());
+    assert!(!root.join("app/target/debug").exists());
+    assert!(
+        result
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("release/app")
+    );
+}
+
 /// Losing change history for a whole root over and over (dropped events under heavy load)
 /// must not turn into back-to-back full scans.
 #[tokio::test(flavor = "multi_thread")]

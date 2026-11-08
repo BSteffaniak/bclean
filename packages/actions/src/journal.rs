@@ -46,6 +46,8 @@ pub enum PerformedAction {
     Archive,
     /// Moved elsewhere.
     Move,
+    /// Everything deleted but the files worth keeping.
+    Trim,
     /// Reversed an earlier entry.
     Undo,
 }

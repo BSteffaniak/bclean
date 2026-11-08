@@ -160,6 +160,7 @@ pub fn action(spec: &ActionSpec) -> String {
         ActionSpec::Command { run, .. } => format!("run `{run}`"),
         ActionSpec::Archive { dest } => format!("archive → {dest}"),
         ActionSpec::Move { dest } => format!("move → {dest}"),
+        ActionSpec::Trim { .. } => "trim (keep outputs)".to_owned(),
         ActionSpec::Report => "report only".to_owned(),
     }
 }

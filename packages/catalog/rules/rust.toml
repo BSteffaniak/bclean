@@ -8,6 +8,14 @@ confidence = "HIGH"
 ephemeral = { kind = "BUILD_ARTIFACT", regen_cost = "CHEAP" }
 stale = { project_idle = "30d" }
 action = { kind = "COMMAND", run = "cargo clean", cwd = "{parent}", fallback = "DELETE" }
+# Inside `[trim]` paths, only the runnable outputs survive: release binaries (also of
+# cross-compiled targets) and the dynamic libraries next to them.
+keep = [
+  { glob = "release/*", executable = true },
+  { glob = "*/release/*", executable = true },
+  { glob = "release/*.{dylib,so,dll}" },
+  { glob = "*/release/*.{dylib,so,dll}" },
+]
 [rules.cargo_target.match]
 name = ["target"]
 sibling_any = ["Cargo.toml"]

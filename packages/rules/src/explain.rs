@@ -179,7 +179,9 @@ impl Classifier<'_> {
                 let reasons = match_reasons(rules, result, &probe);
                 let policy = policy_for(rules, Some(rule.spec()));
                 let staleness = self.engine.evaluate(&target, &policy);
-                assemble(Some((rule.id(), rule.spec())), staleness, size, reasons)
+                let mut class = assemble(Some((rule.id(), rule.spec())), staleness, size, reasons);
+                crate::classify::trim(rules, &path, rule.spec(), &mut class);
+                class
             },
         );
         if size_truncated {

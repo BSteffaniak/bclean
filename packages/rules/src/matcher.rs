@@ -44,8 +44,8 @@ use std::path::{Path, PathBuf};
 
 use bclean_config::Expander;
 use bclean_model::{
-    ActionSpec, ClassifyConfig, Confidence, Config, EphemeralKind, EphemeralSpec, MatchKind,
-    MatchSpec, Os, RegenCost, RuleSpec, SizeModeSpec,
+    ActionSpec, ClassifyConfig, Confidence, Config, EphemeralKind, EphemeralSpec, KeepSpec,
+    MatchKind, MatchSpec, Os, RegenCost, RuleSpec, SizeModeSpec,
 };
 use bclean_tree::{EntryKind, NodeFlags, NodeId, Tree};
 use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
@@ -282,6 +282,8 @@ pub struct RuleSet {
     pub(crate) durable_roots: Vec<PathBuf>,
     pub(crate) expander: Expander,
     pub(crate) ignore: GitIgnoreCache,
+    /// `[trim]` directories.
+    trim: GlobSet,
     warnings: Vec<CompileWarning>,
 }
 
@@ -485,10 +487,46 @@ impl RuleSet {
             {
                 continue;
             }
+            for keep in &spec.keep {
+                glob(&keep.glob, true).map_err(|source| RuleError::Glob {
+                    rule: id.clone(),
+                    field: "keep",
+                    pattern: keep.glob.clone(),
+                    source,
+                })?;
+            }
             if let Some(rule) = compile_rule(id, spec, expander, &mut warnings)? {
                 rules.push(rule);
             }
         }
+        let mut trim = GlobSetBuilder::new();
+        for pattern in &config.trim.paths {
+            let dir = match expander.expand_path(pattern) {
+                Ok(path) => path.to_string_lossy().into_owned(),
+                Err(e) => {
+                    warnings.push(CompileWarning {
+                        rule: "trim.paths".to_owned(),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let pattern_glob = glob(dir.trim_end_matches(['/', '\\']), true).map_err(|source| {
+                RuleError::Glob {
+                    rule: "trim".to_owned(),
+                    field: "paths",
+                    pattern: pattern.clone(),
+                    source,
+                }
+            })?;
+            trim.add(pattern_glob);
+        }
+        let trim = trim.build().map_err(|source| RuleError::Glob {
+            rule: "trim".to_owned(),
+            field: "paths",
+            pattern: config.trim.paths.join(", "),
+            source,
+        })?;
         let classify = config.classify.clone();
         if classify.cachedir_tag && !config.rules.contains_key(CACHEDIR_TAG_RULE) {
             let mut rule =
@@ -532,8 +570,17 @@ impl RuleSet {
             durable_roots,
             ignore: GitIgnoreCache::new(expander),
             expander: expander.clone(),
+            trim,
             warnings,
         })
+    }
+
+    /// What cleaning `path`, a match of `spec`, keeps: `spec.keep` inside a `[trim]`
+    /// directory, else nothing (`None`: the rule's own action applies).
+    #[must_use]
+    pub fn trim_keep(&self, path: &Path, spec: &RuleSpec) -> Option<Vec<KeepSpec>> {
+        (!spec.keep.is_empty() && path.ancestors().any(|dir| self.trim.is_match(dir)))
+            .then(|| spec.keep.clone())
     }
 
     /// Non-fatal issues found while compiling (skipped globs, unexpandable roots).

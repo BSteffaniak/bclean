@@ -134,6 +134,7 @@ pub const fn action_name(action: &ActionSpec) -> &'static str {
         ActionSpec::Command { .. } => "COMMAND",
         ActionSpec::Archive { .. } => "ARCHIVE",
         ActionSpec::Move { .. } => "MOVE",
+        ActionSpec::Trim { .. } => "TRIM",
         ActionSpec::Report => "REPORT",
     }
 }

@@ -82,6 +82,34 @@ max_watches = 0                   # Linux inotify watch cap; 0 = 40% of the per-
 (`--no-daemon`, `daemon start/restart/run`, `service install`, `watch`) and keeps the dashboard
 and browser on the browsed path's filesystem.
 
+### Active projects
+
+Build output of a project still being worked on is never cleaned automatically: not while the
+project has been edited within the rule's `stale.project_idle` (30 days for `target/`), nor
+while a process other than an idle shell (an editor, an agent, a build, a running test) works
+inside it. The dashboard lists it as "active" instead of reclaimable. In a linked git worktree
+whose branch was merged or deleted, build output is cleanable right away; the worktree itself is
+only ever marked unused once removing it would lose nothing (a clean working tree, with its
+commits on the default branch or still on the branch ref).
+
+### Keeping outputs
+
+Rules can name outputs worth keeping, by glob relative to the matched directory (`cargo_target`
+keeps release executables and dylibs). Inside `[trim]` paths, cleaning such a match deletes
+everything else instead of running the rule's action, so a main checkout keeps a runnable
+`target/release/bcode` while its worktrees are cleaned completely:
+
+```toml
+[trim]
+paths = ["~/GitHub/bcode", "~/GitHub/bmux"]
+
+[rules.cargo_target]              # change what is kept
+keep = [
+  { glob = "release/*", executable = true },
+  { glob = "release/*.{dylib,so,dll}" },
+]
+```
+
 ## Dashboard
 
 Plain `bclean` opens a dashboard computed from the daemon's index (instant, no scan):

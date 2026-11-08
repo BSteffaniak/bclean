@@ -262,6 +262,27 @@ pub fn outcome_reasons(
     ));
 }
 
+/// Switches `class`, a match of `spec` at `path`, to trimming inside a `[trim]` directory.
+pub fn trim(rules: &RuleSet, path: &Path, spec: &RuleSpec, class: &mut Classification) {
+    if let Some(keep) = rules.trim_keep(path, spec) {
+        class.reasons.push(Reason::new(
+            "TRIM",
+            format!(
+                "trimmed (inside a [trim] path): keeps {}",
+                keep.iter()
+                    .map(|k| if k.executable {
+                        format!("executable {}", k.glob)
+                    } else {
+                        k.glob.clone()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
+        class.action = ActionSpec::Trim { keep };
+    }
+}
+
 /// Staleness policy for a rule (or a durable suggestion when `spec` is `None`).
 pub fn policy_for(rules: &RuleSet, spec: Option<&RuleSpec>) -> StalenessPolicy {
     let classify = &rules.classify;
@@ -557,7 +578,10 @@ impl<'a> Classifier<'a> {
             return None;
         }
         let size = tree.size(c.node, tree_size_mode(self.rules.size_mode));
-        let classification = assemble(spec, staleness, size, c.reasons);
+        let mut classification = assemble(spec, staleness, size, c.reasons);
+        if let Some((_, spec)) = spec {
+            trim(self.rules, &c.path, spec, &mut classification);
+        }
         Some(ClassifiedEntry {
             node: c.node,
             path: c.path,

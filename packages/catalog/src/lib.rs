@@ -182,6 +182,7 @@ mod tests {
             "auto",
             "priority",
             "confidence",
+            "keep",
         ];
         const MATCH_KEYS: &[&str] = &[
             "kind",

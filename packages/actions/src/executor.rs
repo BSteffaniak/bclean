@@ -429,6 +429,7 @@ impl Executor {
             ActionSpec::Report => Err(ActError::Skip(SkipReason::ReportOnly)),
             ActionSpec::Delete => do_delete(path, cancel, tick),
             ActionSpec::Trash => do_trash(path),
+            ActionSpec::Trim { keep } => do_trim(path, keep, cancel, tick),
             ActionSpec::Command { run, cwd, fallback } => {
                 self.do_command(item, run, cwd.as_deref(), *fallback, cancel)
             }
@@ -601,6 +602,44 @@ fn do_delete(
     }
 }
 
+fn do_trim(
+    path: &Path,
+    keep: &[bclean_model::KeepSpec],
+    cancel: &CancelToken,
+    tick: &mut dyn FnMut(u64),
+) -> Result<Performed, ActError> {
+    let keeper = crate::trim::Keeper::new(keep)
+        .map_err(|e| ActError::Fail(format!("invalid keep pattern: {e}")))?;
+    match crate::trim::trim(path, &keeper, cancel, tick) {
+        Ok(trimmed) => {
+            let mut names: Vec<String> = trimmed
+                .kept
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            let detail = if names.is_empty() {
+                "kept nothing".to_owned()
+            } else {
+                format!(
+                    "kept {} file(s), {} bytes: {}",
+                    names.len(),
+                    trimmed.kept_bytes,
+                    names.join(", ")
+                )
+            };
+            Ok(Performed {
+                detail: Some(detail),
+                ..Performed::simple(PerformedAction::Trim, true)
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted && cancel.is_cancelled() => {
+            Err(ActError::Cancelled)
+        }
+        Err(e) => Err(ActError::Fail(format!("trim failed: {e}"))),
+    }
+}
+
 fn do_trash(path: &Path) -> Result<Performed, ActError> {
     let trashed_at = now_unix();
     trash::delete(path).map_err(|e| ActError::Fail(format!("trash failed: {e}")))?;
@@ -624,6 +663,7 @@ const fn planned_action(action: &ActionSpec) -> Option<PerformedAction> {
         ActionSpec::Command { .. } => Some(PerformedAction::Command),
         ActionSpec::Archive { .. } => Some(PerformedAction::Archive),
         ActionSpec::Move { .. } => Some(PerformedAction::Move),
+        ActionSpec::Trim { .. } => Some(PerformedAction::Trim),
         ActionSpec::Report => None,
     }
 }
@@ -635,6 +675,7 @@ fn describe(action: &ActionSpec) -> String {
         ActionSpec::Command { run, .. } => format!("run `{run}` for"),
         ActionSpec::Archive { dest } => format!("archive (into {dest}) and delete"),
         ActionSpec::Move { dest } => format!("move (into {dest})"),
+        ActionSpec::Trim { .. } => "trim (keeping outputs)".to_owned(),
         ActionSpec::Report => "report".to_owned(),
     }
 }

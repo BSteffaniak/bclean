@@ -34,6 +34,8 @@ pub struct Config {
     pub daemon: DaemonConfig,
     /// Interactive UI defaults.
     pub tui: TuiConfig,
+    /// Where cleaning keeps a rule's outputs (see [`TrimConfig`]).
+    pub trim: TrimConfig,
 }
 
 /// Size measure used for display and accounting.
@@ -385,6 +387,37 @@ pub enum ActionSpec {
     },
     /// Report only; never acted on.
     Report,
+    /// Delete everything inside the directory except files matching `keep`, and the
+    /// directories left empty. Applied in place of a rule's action inside `[trim]` paths, for
+    /// rules with `keep` patterns.
+    Trim {
+        /// Files to keep.
+        keep: Vec<KeepSpec>,
+    },
+}
+
+/// Files a [`ActionSpec::Trim`] keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeepSpec {
+    /// Glob relative to the trimmed directory (`release/*`, `*/release/*.dylib`): `*` stays
+    /// within one path component, `**` crosses them, `{a,b}` alternates.
+    pub glob: String,
+    /// Only executable files: the execute bit on Unix, `.exe` on Windows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub executable: bool,
+}
+
+/// Directories whose rule matches keep their outputs when cleaned.
+///
+/// A match of a rule with `keep` patterns inside one of `paths` is trimmed
+/// ([`ActionSpec::Trim`]) instead of cleaned by the rule's action. For example, keeping release
+/// binaries of the main checkouts of the projects one runs, while their worktrees are cleaned
+/// completely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TrimConfig {
+    /// Directories (globs, with `~` expansion) whose matches are trimmed.
+    pub paths: Vec<String>,
 }
 
 impl ActionSpec {
@@ -420,6 +453,8 @@ pub struct RuleSpec {
     pub priority: i32,
     /// Detection confidence.
     pub confidence: Confidence,
+    /// Outputs worth keeping when a match is cleaned inside a `[trim]` path.
+    pub keep: Vec<KeepSpec>,
 }
 
 impl Default for RuleSpec {
@@ -435,6 +470,7 @@ impl Default for RuleSpec {
             auto: false,
             priority: 0,
             confidence: Confidence::High,
+            keep: Vec::new(),
         }
     }
 }
