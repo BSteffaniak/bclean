@@ -159,6 +159,7 @@ pub fn combine(signals: Vec<SignalReading>, policy: &StalenessPolicy, now: i64) 
         idle_secs,
         threshold_secs: policy.threshold_secs,
         signals,
+        project_scoped: policy.project_idle_secs.is_some(),
     }
 }
 

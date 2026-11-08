@@ -123,8 +123,16 @@ impl Engine {
             ..DashboardSummary::default()
         };
         let items = collect_items(&scope);
-        let safe = safe_paths(&items);
-        summarize_items(&mut summary, &items, &safe, &scope);
+        let active: BTreeSet<PathBuf> = items
+            .iter()
+            .filter(|i| {
+                let staleness = &i.class.staleness;
+                staleness.project_scoped && (!staleness.stale || self.in_use(i.path).is_some())
+            })
+            .map(|i| i.path.to_path_buf())
+            .collect();
+        let safe = safe_paths(&items, &active);
+        summarize_items(&mut summary, &items, &safe, &active, &scope);
 
         let volumes = self.volumes().await.unwrap_or_default();
         for stats in volumes
@@ -134,7 +142,7 @@ impl Engine {
             let trend = self.volume_trend(&stats, now).await;
             summary
                 .volumes
-                .push(volume_summary(stats, &scope, &items, trend));
+                .push(volume_summary(stats, &scope, &items, &active, trend));
         }
         summary
             .volumes
@@ -350,10 +358,12 @@ fn collect_items(scope: &[ScopedRoot]) -> Vec<Item<'_>> {
     top
 }
 
-/// Paths an automatic clean (the default policy selection) would pick.
-fn safe_paths(items: &[Item<'_>]) -> BTreeSet<PathBuf> {
+/// Paths an automatic clean (the default policy selection) would pick: never build output of
+/// a project in use.
+fn safe_paths(items: &[Item<'_>], active: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
     let candidates: Vec<Candidate> = items
         .iter()
+        .filter(|i| !active.contains(i.path))
         .map(|i| Candidate::new(i.path, None, i.class.clone()))
         .collect();
     bclean_policy::select(
@@ -372,6 +382,7 @@ fn summarize_items(
     summary: &mut DashboardSummary,
     items: &[Item<'_>],
     safe: &BTreeSet<PathBuf>,
+    active: &BTreeSet<PathBuf>,
     scope: &[ScopedRoot],
 ) {
     let mut kinds: BTreeMap<Option<EphemeralKind>, KindBucket> = BTreeMap::new();
@@ -390,6 +401,9 @@ fn summarize_items(
         if is_safe {
             reclaim.safe += size;
             reclaim.safe_items += 1;
+        }
+        if active.contains(item.path) {
+            reclaim.active += size;
         }
         match (class.ephemeral.is_some(), class.staleness.stale) {
             (true, true) => reclaim.ephemeral_stale += size,
@@ -449,17 +463,26 @@ fn summarize_items(
     summary
         .by_category
         .sort_by_key(|b| std::cmp::Reverse(b.bytes));
-    summary.top_items = top_items(items, safe);
+    summary.top_items = top_items(items, safe, active);
     let mut safe_items: Vec<&Item<'_>> = items.iter().filter(|i| safe.contains(i.path)).collect();
     safe_items.sort_by_key(|i| std::cmp::Reverse(i.class.size));
     summary.reclaimable.safe_paths = safe_items.iter().map(|i| i.path.to_path_buf()).collect();
     summary.projects = top_projects(projects, project_entries);
 }
 
-/// The best candidates by score.
-fn top_items(items: &[Item<'_>], safe: &BTreeSet<PathBuf>) -> Vec<DashboardItem> {
+/// The best candidates by score, build output of projects in use last.
+fn top_items(
+    items: &[Item<'_>],
+    safe: &BTreeSet<PathBuf>,
+    active: &BTreeSet<PathBuf>,
+) -> Vec<DashboardItem> {
     let mut top: Vec<&Item<'_>> = items.iter().collect();
-    top.sort_by(|a, b| b.class.score.total_cmp(&a.class.score));
+    top.sort_by(|a, b| {
+        active
+            .contains(a.path)
+            .cmp(&active.contains(b.path))
+            .then(b.class.score.total_cmp(&a.class.score))
+    });
     top.into_iter()
         .take(TOP_ITEMS)
         .map(|item| DashboardItem {
@@ -471,6 +494,7 @@ fn top_items(items: &[Item<'_>], safe: &BTreeSet<PathBuf>) -> Vec<DashboardItem>
             stale: item.class.staleness.stale,
             score: item.class.score,
             safe: safe.contains(item.path),
+            active: active.contains(item.path),
         })
         .collect()
 }
@@ -544,6 +568,7 @@ fn volume_summary(
     stats: VolumeStats,
     scope: &[ScopedRoot],
     items: &[Item<'_>],
+    active: &BTreeSet<PathBuf>,
     trend: VolumeTrend,
 ) -> VolumeSummary {
     let device = device_of(Path::new(&stats.mount_point));
@@ -566,9 +591,10 @@ fn volume_summary(
         })
         .map(|&i| scope[i].tree.size(NodeId::ROOT, SizeMode::Allocated))
         .sum();
-    let reclaimable = items
-        .iter()
-        .filter(|item| counted.contains(&item.root))
+    let on_this = || items.iter().filter(|item| counted.contains(&item.root));
+    let reclaimable = on_this().map(|item| item.class.size).sum();
+    let active = on_this()
+        .filter(|item| active.contains(item.path))
         .map(|item| item.class.size)
         .sum();
     let growth_per_day = trend.bytes_per_sec.map(|rate| {
@@ -594,6 +620,7 @@ fn volume_summary(
         stats,
         indexed,
         reclaimable,
+        active,
         trend: trend.trend,
         trend_span_secs: trend.span_secs,
         growth_per_day,
@@ -601,16 +628,11 @@ fn volume_summary(
     }
 }
 
-/// `path` as macOS firmlinks present it: the data volume, mounted at `/System/Volumes/Data`,
-/// appears at `/`, so `/Users/me` lies inside a root opened at `/System/Volumes/Data`.
-/// Compared by spelling alone, the two roots overlap without nesting and are counted twice.
+/// `path` through macOS firmlinks: `/Users/me` lies inside a root opened at
+/// `/System/Volumes/Data`. Compared by spelling alone, the two roots overlap without nesting
+/// and are counted twice.
 fn logical(path: &Path) -> PathBuf {
-    if cfg!(target_os = "macos")
-        && let Ok(rest) = path.strip_prefix("/System/Volumes/Data")
-    {
-        return Path::new("/").join(rest);
-    }
-    path.to_path_buf()
+    crate::firmlinked(path)
 }
 
 #[cfg(unix)]

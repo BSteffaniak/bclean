@@ -385,6 +385,9 @@ struct Inner {
     exec_lock: tokio::sync::Mutex<()>,
     /// Dashboard volume trends, keyed by mount point.
     volume_trends: Mutex<BTreeMap<String, dashboard::VolumeTrend>>,
+    /// Working directories of the user's non-shell processes, with when they were listed
+    /// (see [`Engine::in_use`]).
+    working: Mutex<Option<(Instant, WorkingDirs)>>,
     /// Drives indexed besides `monitor.index_roots` (see [`Engine::refresh_volume_roots`]).
     volume_roots: Mutex<Vec<PathBuf>>,
     /// [`EngineOptions::one_filesystem`].
@@ -457,6 +460,7 @@ impl Engine {
                 started_at: unix_now(),
                 watchers: Mutex::new(Vec::new()),
                 volume_trends: Mutex::new(BTreeMap::new()),
+                working: Mutex::new(None),
                 volume_roots: Mutex::new(Vec::new()),
                 one_filesystem: options.one_filesystem,
                 stopping: AtomicBool::new(false),
@@ -1461,6 +1465,57 @@ impl Engine {
         Plan::from_candidates(&candidates)
     }
 
+    /// Why the project owning `path` is in use right now, if it is: a process other than an
+    /// idle shell (an editor, an agent, a build, a running test) works inside it. The process
+    /// list is refreshed at most every [`IN_USE_TTL`].
+    #[must_use]
+    pub fn in_use(&self, path: &Path) -> Option<String> {
+        let working = self.working_dirs();
+        if working.is_empty() {
+            return None;
+        }
+        let path = firmlinked(path);
+        let home = self.inner.load.expander.home().map(Path::to_path_buf);
+        let project = bclean_staleness::find_project_root(
+            &path,
+            home.as_deref(),
+            bclean_staleness::DEFAULT_PROJECT_MARKERS,
+        )?;
+        working
+            .iter()
+            .find(|(_, cwd)| cwd.starts_with(&project))
+            .map(|(name, cwd)| format!("{name} is working in {}", cwd.display()))
+    }
+
+    fn working_dirs(&self) -> WorkingDirs {
+        let mut cached = self.inner.working.lock();
+        if let Some((at, dirs)) = cached.as_ref()
+            && at.elapsed() < IN_USE_TTL
+        {
+            return Arc::clone(dirs);
+        }
+        let dirs: WorkingDirs = Arc::new(
+            bclean_actions::busy::working_processes()
+                .into_iter()
+                .filter(|p| !p.is_shell())
+                .map(|p| (p.name, firmlinked(&p.cwd)))
+                .collect(),
+        );
+        *cached = Some((Instant::now(), Arc::clone(&dirs)));
+        dirs
+    }
+
+    /// Candidates an automatic clean may consider: every classified entry, except build output
+    /// of a project in use (see [`Engine::in_use`]).
+    #[must_use]
+    pub fn automatic_candidates(&self) -> Vec<Candidate> {
+        let mut candidates = self.all_candidates();
+        candidates.retain(|c| {
+            !c.classification.staleness.project_scoped || self.in_use(&c.path).is_none()
+        });
+        candidates
+    }
+
     /// Every classified entry of every loaded root as a plan candidate.
     #[must_use]
     pub fn all_candidates(&self) -> Vec<Candidate> {
@@ -1480,7 +1535,7 @@ impl Engine {
     /// Policy-style plan with default selection (auto-safe ephemeral items) over every root.
     #[must_use]
     pub fn plan_auto(&self) -> Plan {
-        let candidates = self.all_candidates();
+        let candidates = self.automatic_candidates();
         let chosen = bclean_policy::select(
             &SelectSpec::default(),
             &BudgetSpec::default(),
@@ -1817,7 +1872,7 @@ impl Engine {
         if firings.is_empty() {
             return Ok(Vec::new());
         }
-        let candidates = self.all_candidates();
+        let candidates = self.automatic_candidates();
         let mut out = Vec::new();
         for firing in firings {
             let planned = self
@@ -1935,6 +1990,23 @@ impl Engine {
             watchers: self.inner.watchers.lock().clone(),
         }
     }
+}
+
+/// Names and working directories of the user's non-shell processes.
+type WorkingDirs = Arc<Vec<(String, PathBuf)>>;
+
+/// How long [`Engine::in_use`] reuses a process listing.
+const IN_USE_TTL: Duration = Duration::from_secs(30);
+
+/// `path` as macOS firmlinks present it: the data volume, mounted at `/System/Volumes/Data`,
+/// appears at `/` (`/System/Volumes/Data/Users/me` is `/Users/me`). Elsewhere, `path`.
+pub(crate) fn firmlinked(path: &Path) -> PathBuf {
+    if cfg!(target_os = "macos")
+        && let Ok(rest) = path.strip_prefix("/System/Volumes/Data")
+    {
+        return Path::new("/").join(rest);
+    }
+    path.to_path_buf()
 }
 
 const fn size_mode(settings: &Settings) -> SizeMode {

@@ -512,7 +512,9 @@ pub enum SelectOrder {
 pub struct SelectSpec {
     /// Require ephemeral (`true`) or durable (`false`) items.
     pub ephemeral: Option<bool>,
-    /// Require stale (`true`) or fresh (`false`) items.
+    /// Require stale (`true`) or fresh (`false`) items. Unset takes either, except build
+    /// output of a project still in use (fresh with `stale.project_idle`), which only an
+    /// explicit `false` selects.
     pub stale: Option<bool>,
     /// Only rules marked `auto = true`.
     pub auto_only: bool,

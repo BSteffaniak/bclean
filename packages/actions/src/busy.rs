@@ -12,7 +12,7 @@
 //!   processes owned by the current user are visible without privileges). Windows has no cheap
 //!   API for this and the check is skipped.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Lock/state files looked for *inside* the target.
@@ -89,107 +89,164 @@ pub fn check_busy(path: &Path, window: Duration, check_processes: bool) -> Optio
 #[must_use]
 pub fn process_with_cwd_inside(path: &Path) -> Option<u32> {
     let target = std::fs::canonicalize(path).ok()?;
-    platform::find_cwd_inside(&target)
+    working_processes()
+        .into_iter()
+        .find(|p| p.cwd.starts_with(&target))
+        .map(|p| p.pid)
+}
+
+/// A process and the directory it works in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingProcess {
+    /// Process id.
+    pub pid: u32,
+    /// Executable name (`bmux`, `cargo`, `zsh`, ...).
+    pub name: String,
+    /// Current working directory.
+    pub cwd: PathBuf,
+}
+
+impl WorkingProcess {
+    /// Whether this is an interactive shell. A shell left open in a project says little about
+    /// whether the project is being worked on; what runs inside it does.
+    #[must_use]
+    pub fn is_shell(&self) -> bool {
+        SHELLS.contains(&self.name.trim_start_matches('-'))
+    }
+}
+
+/// Interactive shells (see [`WorkingProcess::is_shell`]).
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "nu", "dash", "ksh", "tcsh", "csh", "elvish", "xonsh", "pwsh",
+    "login",
+];
+
+/// Processes of the current user (other than this one) with their working directories, where
+/// the platform exposes them (Linux and macOS; empty elsewhere).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[must_use]
+pub fn working_processes() -> Vec<WorkingProcess> {
+    platform::working_processes()
+}
+
+/// Processes of the current user with their working directories: none, as this platform has
+/// no cheap API for them.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[must_use]
+pub const fn working_processes() -> Vec<WorkingProcess> {
+    Vec::new()
 }
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use std::path::Path;
+    use super::WorkingProcess;
 
-    pub fn find_cwd_inside(target: &Path) -> Option<u32> {
+    pub fn working_processes() -> Vec<WorkingProcess> {
         let own = std::process::id();
-        for entry in std::fs::read_dir("/proc").ok()?.flatten() {
-            let Some(pid) = entry
-                .file_name()
-                .to_str()
-                .and_then(|s| s.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            if pid == own {
-                continue;
-            }
-            if let Ok(cwd) = std::fs::read_link(entry.path().join("cwd"))
-                && cwd.starts_with(target)
-            {
-                return Some(pid);
-            }
-        }
-        None
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+                if pid == own {
+                    return None;
+                }
+                let cwd = std::fs::read_link(entry.path().join("cwd")).ok()?;
+                let name = std::fs::read_to_string(entry.path().join("comm"))
+                    .map(|s| s.trim().to_owned())
+                    .unwrap_or_default();
+                Some(WorkingProcess { pid, name, cwd })
+            })
+            .collect()
     }
 }
 
 #[cfg(target_os = "macos")]
 mod platform {
     use std::ffi::CStr;
-    use std::path::Path;
+    use std::path::PathBuf;
 
-    pub fn find_cwd_inside(target: &Path) -> Option<u32> {
+    use super::WorkingProcess;
+
+    pub fn working_processes() -> Vec<WorkingProcess> {
         let own = std::process::id();
+        all_pids()
+            .into_iter()
+            .filter_map(|pid| {
+                let upid = u32::try_from(pid).ok()?;
+                if upid == 0 || upid == own {
+                    return None;
+                }
+                let cwd = cwd_of(pid)?;
+                Some(WorkingProcess {
+                    pid: upid,
+                    name: name_of(pid),
+                    cwd,
+                })
+            })
+            .collect()
+    }
+
+    fn all_pids() -> Vec<libc::c_int> {
         let mut pids: Vec<libc::c_int> = vec![0; 8192];
         loop {
-            let bytes = libc::c_int::try_from(pids.len() * size_of::<libc::c_int>()).ok()?;
+            let Ok(bytes) = libc::c_int::try_from(pids.len() * size_of::<libc::c_int>()) else {
+                return Vec::new();
+            };
             // SAFETY: the buffer is valid for `bytes` bytes of writable `c_int`s.
             let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-            let count = usize::try_from(count).ok()?;
-            if count < pids.len() {
+            let Ok(count) = usize::try_from(count) else {
+                return Vec::new();
+            };
+            if count < pids.len() || pids.len() >= 1 << 20 {
                 pids.truncate(count);
-                break;
-            }
-            if pids.len() >= 1 << 20 {
-                break;
+                return pids;
             }
             pids.resize(pids.len() * 2, 0);
         }
-        for pid in pids {
-            let Ok(upid) = u32::try_from(pid) else {
-                continue;
-            };
-            if upid == 0 || upid == own {
-                continue;
-            }
-            // SAFETY: `proc_vnodepathinfo` is a plain C struct for which all-zero bytes is valid.
-            let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-            let size = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()).ok()?;
-            // SAFETY: `info` is a valid, writable buffer of `size` bytes for this flavor.
-            let written = unsafe {
-                libc::proc_pidinfo(
-                    pid,
-                    libc::PROC_PIDVNODEPATHINFO,
-                    0,
-                    std::ptr::addr_of_mut!(info).cast(),
-                    size,
-                )
-            };
-            if written != size {
-                continue;
-            }
-            let raw = &info.pvi_cdir.vip_path;
-            // SAFETY: `vip_path` is a contiguous `[[c_char; 32]; 32]` (MAXPATHLEN bytes) array;
-            // viewing it as a flat byte slice of the same length is sound.
-            let bytes: &[u8] =
-                unsafe { std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), size_of_val(raw)) };
-            let Ok(cstr) = CStr::from_bytes_until_nul(bytes) else {
-                continue;
-            };
-            let Ok(text) = cstr.to_str() else {
-                continue;
-            };
-            if !text.is_empty() && Path::new(text).starts_with(target) {
-                return Some(upid);
-            }
-        }
-        None
     }
-}
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-mod platform {
-    use std::path::Path;
+    fn cwd_of(pid: libc::c_int) -> Option<PathBuf> {
+        // SAFETY: `proc_vnodepathinfo` is a plain C struct for which all-zero bytes is valid.
+        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()).ok()?;
+        // SAFETY: `info` is a valid, writable buffer of `size` bytes for this flavor.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                std::ptr::addr_of_mut!(info).cast(),
+                size,
+            )
+        };
+        if written != size {
+            return None;
+        }
+        let raw = &info.pvi_cdir.vip_path;
+        // SAFETY: `vip_path` is a contiguous `[[c_char; 32]; 32]` (MAXPATHLEN bytes) array;
+        // viewing it as a flat byte slice of the same length is sound.
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), size_of_val(raw)) };
+        let text = CStr::from_bytes_until_nul(bytes).ok()?.to_str().ok()?;
+        (!text.is_empty()).then(|| PathBuf::from(text))
+    }
 
-    /// No cheap API on this platform; always reports "not busy".
-    pub const fn find_cwd_inside(_target: &Path) -> Option<u32> {
-        None
+    fn name_of(pid: libc::c_int) -> String {
+        let mut buf = [0u8; 256];
+        let Ok(len) = u32::try_from(buf.len()) else {
+            return String::new();
+        };
+        // SAFETY: `buf` is valid for `len` writable bytes; proc_name NUL-terminates within it.
+        let written = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), len) };
+        if written <= 0 {
+            return String::new();
+        }
+        CStr::from_bytes_until_nul(&buf)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 }
 
@@ -238,5 +295,34 @@ mod tests {
         child.kill().ok();
         child.wait().ok();
         assert_eq!(found, Some(child.id()));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn lists_working_processes_with_their_names() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let mut found = None;
+        for _ in 0..50 {
+            found = working_processes()
+                .into_iter()
+                .find(|p| p.pid == child.id());
+            if found.as_ref().is_some_and(|p| !p.name.is_empty()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.kill().ok();
+        child.wait().ok();
+        let found = found.expect("the child is listed");
+        // `sleep` may be a multi-call binary (`coreutils` under Nix): only its presence counts.
+        assert!(!found.name.is_empty() && !found.is_shell(), "{found:?}");
+        let shell = WorkingProcess {
+            name: "-zsh".to_owned(),
+            ..found
+        };
+        assert!(shell.is_shell());
     }
 }

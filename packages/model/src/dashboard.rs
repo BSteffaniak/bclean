@@ -45,6 +45,9 @@ pub struct VolumeSummary {
     pub indexed: u64,
     /// Reclaimable bytes on this volume.
     pub reclaimable: u64,
+    /// Part of `reclaimable` that is build output of projects still in use.
+    #[serde(default)]
+    pub active: u64,
     /// Used bytes over time, oldest first, evenly spaced over `trend_span_secs`.
     pub trend: Vec<u64>,
     /// Time covered by `trend`.
@@ -86,6 +89,19 @@ impl VolumeSummary {
     #[must_use]
     pub fn reclaimable_on_volume(&self) -> u64 {
         self.reclaimable.min(self.indexed_on_volume())
+    }
+
+    /// Reclaimable bytes that are not build output of projects in use.
+    #[must_use]
+    pub fn idle_reclaimable(&self) -> u64 {
+        self.reclaimable_on_volume()
+            .saturating_sub(self.active_on_volume())
+    }
+
+    /// Build output of projects in use, at most [`VolumeSummary::reclaimable_on_volume`].
+    #[must_use]
+    pub fn active_on_volume(&self) -> u64 {
+        self.active.min(self.reclaimable_on_volume())
     }
 
     /// Bytes this volume uses outside every indexed root (system files, apps, other users,
@@ -135,13 +151,19 @@ pub struct ReclaimSummary {
     pub ephemeral_fresh: u64,
     /// Durable but unused.
     pub durable_stale: u64,
+    /// Build output of projects still in use (recently worked on, or with a process working
+    /// in them): regenerable, but never selected automatically.
+    #[serde(default)]
+    pub active: u64,
 }
 
 impl ReclaimSummary {
-    /// Reclaimable bytes that need a human decision.
+    /// Reclaimable bytes that need a human decision (neither safe now nor in active use).
     #[must_use]
     pub const fn review(&self) -> u64 {
-        self.total.saturating_sub(self.safe)
+        self.total
+            .saturating_sub(self.safe)
+            .saturating_sub(self.active)
     }
 }
 
@@ -190,6 +212,9 @@ pub struct DashboardItem {
     pub score: f64,
     /// An automatic clean would select it.
     pub safe: bool,
+    /// Build output of a project still in use (see [`ReclaimSummary::active`]).
+    #[serde(default)]
+    pub active: bool,
 }
 
 /// A project (directory with a project marker such as `.git` or `Cargo.toml`) and the

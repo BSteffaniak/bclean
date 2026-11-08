@@ -116,7 +116,8 @@ async fn shadow_policy_fires_plans_and_alerts() {
 [policies.always]
 trigger = { kind = "USED_ABOVE", volume = "*", threshold = "0%" }
 mode = "SHADOW"
-select = { ephemeral = true, auto_only = false, min_size = "1B" }
+# The fixture's projects were just created, so their build output is fresh: ask for it.
+select = { ephemeral = true, stale = false, auto_only = false, min_size = "1B" }
 "#;
     let (_dir, root, engine) = setup(config).await;
     engine.scan(&root).await.unwrap();
@@ -214,6 +215,32 @@ async fn root_level_changes_never_rescan_unchanged_subtrees() {
     // Status counts the one full scan and every incremental refresh.
     let status = &engine.root_statuses()[0];
     assert_eq!((status.full_scans, status.refreshes), (1, 3));
+}
+
+/// Build output of a project still being worked on is never picked automatically: by default
+/// only once the project has been idle for the rule's `stale.project_idle`.
+#[tokio::test(flavor = "multi_thread")]
+async fn automatic_cleaning_skips_build_output_of_active_projects() {
+    let (_dir, root, engine) = setup("").await;
+    engine.scan(&root).await.unwrap();
+    let target = root.join("app/target");
+    let class = engine
+        .classifications_under(&root)
+        .into_iter()
+        .find(|c| c.path == target)
+        .expect("app/target is classified")
+        .classification;
+    assert!(class.staleness.project_scoped && !class.staleness.stale);
+    assert!(
+        engine.plan_auto().items.iter().all(|i| i.path != target),
+        "fresh build output is not planned automatically"
+    );
+    let summary = engine
+        .dashboard(std::slice::from_ref(&root), false)
+        .await
+        .unwrap();
+    assert!(summary.reclaimable.active >= class.size);
+    assert!(!summary.reclaimable.safe_paths.contains(&target));
 }
 
 /// Losing change history for a whole root over and over (dropped events under heavy load)

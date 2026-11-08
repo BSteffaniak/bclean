@@ -73,6 +73,11 @@ pub struct Staleness {
     pub threshold_secs: u64,
     /// Individual signal readings.
     pub signals: Vec<SignalReading>,
+    /// The rule ties the item to its owning project's activity (`stale.project_idle`, build
+    /// output): while the verdict is fresh, the project is in use and the item is too, so
+    /// automatic cleaning leaves it alone.
+    #[serde(default)]
+    pub project_scoped: bool,
 }
 
 /// Position in the ephemeral × stale matrix.

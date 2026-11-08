@@ -56,6 +56,10 @@ pub fn select<'a>(
             if select.stale.is_some_and(|s| s != class.staleness.stale) {
                 return false;
             }
+            // Build output of a project still in use stays, unless fresh items are asked for.
+            if select.stale.is_none() && class.staleness.project_scoped && !class.staleness.stale {
+                return false;
+            }
             if select.auto_only && !class.auto {
                 return false;
             }

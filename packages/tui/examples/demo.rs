@@ -166,6 +166,7 @@ fn classify(tree: &Tree) -> Vec<(PathBuf, Classification)> {
                     last_activity: Some(info.max_mtime),
                     idle_secs: Some(idle),
                     threshold_secs: STALE_AFTER,
+                    project_scoped: false,
                     signals: vec![SignalReading {
                         kind: SignalKind::FsTimes,
                         last_activity: Some(info.max_mtime),

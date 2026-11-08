@@ -34,6 +34,7 @@ const RECLAIMABLE: Color = Color::Yellow;
 const INDEXED: Color = Color::Blue;
 const OUTSIDE: Color = Color::Magenta;
 const OTHER_VOLUMES: Color = Color::Cyan;
+const ACTIVE: Color = Color::Green;
 const FREE: Color = Color::BrightBlack;
 const SAFE: Style = Style::new().fg(Color::Green);
 const REVIEW: Style = Style::new().fg(Color::Yellow);
@@ -412,14 +413,15 @@ fn volume_rows(volume: &VolumeSummary, cx: &mut PaintCx<'_, '_>, inner: Rect, y:
 
     // Composition: reclaimable | other indexed | outside the index | other volumes | free.
     let segments: Vec<(u64, Color, &str)> = [
-        (volume.reclaimable_on_volume(), RECLAIMABLE, "reclaimable"),
+        (volume.idle_reclaimable(), RECLAIMABLE, "reclaimable"),
+        (volume.active_on_volume(), ACTIVE, "active builds"),
         (volume.indexed_kept(), INDEXED, "rest of index"),
         (volume.outside_index(), OUTSIDE, "outside index"),
         (volume.other_volumes(), OTHER_VOLUMES, "other volumes"),
         (stats.available, FREE, "free"),
     ]
     .into_iter()
-    .filter(|&(bytes, _, name)| bytes > 0 || name != "other volumes")
+    .filter(|&(bytes, _, name)| bytes > 0 || !matches!(name, "other volumes" | "active builds"))
     .collect();
     if y + 1 < inner.height {
         stacked_bar(&segments, cx, row(inner, y + 1));
@@ -555,6 +557,16 @@ fn reclaim_panel(summary: &DashboardSummary, cx: &mut PaintCx<'_, '_>, area: Rec
         &Line::from_spans(vec![
             Span::styled("review    ", REVIEW),
             Span::styled(format!("{:>9}", format::size(r.review())), REVIEW),
+        ]),
+    );
+    line_at(
+        cx,
+        inner,
+        3,
+        &Line::from_spans(vec![
+            Span::styled("active    ", MUTED),
+            Span::styled(format!("{:>9}", format::size(r.active)), MUTED),
+            Span::styled("  build output of projects in use", MUTED),
         ]),
     );
     let cell = |bytes: u64| {
@@ -754,9 +766,13 @@ fn wins_panel<B: Backend>(
             .category
             .clone()
             .unwrap_or_else(|| kind_label(item.kind).to_owned());
-        let idle = item
-            .idle_secs
-            .map_or_else(String::new, |s| format!("idle {}", format::age(s)));
+        // Build output of a project in use: its own age says nothing about the project's.
+        let idle = if item.active {
+            "active".to_owned()
+        } else {
+            item.idle_secs
+                .map_or_else(String::new, |s| format!("idle {}", format::age(s)))
+        };
         let right = format!(
             " {tag:>10} {idle:>10} {}",
             if item.safe { "✓" } else { " " }

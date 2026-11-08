@@ -85,6 +85,7 @@ mod tests {
                 forces_stale: forced,
                 detail: String::new(),
             }],
+            project_scoped: false,
         }
     }
 

@@ -594,6 +594,7 @@ fn sample_summary(volume: VolumeStats) -> DashboardSummary {
             growth_per_day: Some(2 << 30),
             full_in_secs: Some(25 * 86_400),
             own_used: None,
+            active: 0,
         }],
         roots: Vec::new(),
         reclaimable: ReclaimSummary {
@@ -605,6 +606,7 @@ fn sample_summary(volume: VolumeStats) -> DashboardSummary {
             ephemeral_stale: 500,
             ephemeral_fresh: 0,
             durable_stale: 300,
+            active: 0,
         },
         by_kind: vec![
             KindBucket {
@@ -677,6 +679,7 @@ fn sample_items() -> Vec<bclean_model::DashboardItem> {
             stale: true,
             score: 9.0,
             safe: true,
+            active: false,
         },
         DashboardItem {
             path: PathBuf::from("/r/b"),
@@ -687,6 +690,7 @@ fn sample_items() -> Vec<bclean_model::DashboardItem> {
             stale: true,
             score: 3.0,
             safe: false,
+            active: false,
         },
     ]
 }
