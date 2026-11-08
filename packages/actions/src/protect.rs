@@ -15,7 +15,8 @@
 //!
 //! Paths are compared both lexically normalized and with their parent canonicalized (the final
 //! component is never resolved, because removing a symlink must not be judged by its target).
-//! On Windows comparisons are case-insensitive.
+//! On Windows comparisons are case-insensitive. On macOS, paths on the data volume's own mount
+//! (`/System/Volumes/Data/...`) are judged by the path they are firmlinked to (`/...`).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -148,9 +149,9 @@ impl Protector {
     /// Returns why `path` is protected, or `None` if it may be acted on.
     #[must_use]
     pub fn check(&self, path: &Path) -> Option<String> {
-        let lexical = normalize(path);
+        let lexical = data_volume_alias(normalize(path));
         let mut forms = vec![lexical.clone()];
-        if let Some(canonical) = canonical_parent_form(&lexical)
+        if let Some(canonical) = canonical_parent_form(&lexical).map(data_volume_alias)
             && canonical != lexical
         {
             forms.push(canonical);
@@ -264,6 +265,19 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 /// The path with its parent directory canonicalized (symlinks resolved) but its final
 /// component left as-is.
+/// On macOS, the path a data-volume path is firmlinked to: the data volume is mounted at
+/// `/System/Volumes/Data` and its contents (`/Users`, `/private/var`, `/opt`, ...) appear at
+/// `/`. Browsing `/` indexes the volume under its mount point, and judged by that spelling
+/// every user file would fall inside the protected `/System`.
+fn data_volume_alias(path: PathBuf) -> PathBuf {
+    if cfg!(target_os = "macos")
+        && let Ok(rest) = path.strip_prefix("/System/Volumes/Data")
+    {
+        return Path::new("/").join(rest);
+    }
+    path
+}
+
 fn canonical_parent_form(path: &Path) -> Option<PathBuf> {
     let name = path.file_name()?;
     let parent = path.parent()?;
@@ -447,6 +461,21 @@ mod tests {
             assert!(protector.is_protected(&home.join("Documents")));
             assert!(!protector.is_protected(&home.join("Documents/project/target")));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn data_volume_paths_are_judged_by_their_firmlinked_path() {
+        let protector = Protector::builtin();
+        let data = Path::new("/System/Volumes/Data");
+        assert!(protector.is_protected(data));
+        assert!(protector.is_protected(&data.join("private/var/folders")));
+        assert!(protector.is_protected(&data.join("usr/local/bin")));
+        assert!(!protector.is_protected(
+            &data.join("private/var/folders/ab/xyz/X/com.google.Chrome.code_sign_clone/clone.1")
+        ));
+        assert!(protector.is_protected(Path::new("/System/Library/Caches")));
+        assert!(protector.is_protected(Path::new("/System/Volumes/Preboot/x")));
     }
 
     #[test]
