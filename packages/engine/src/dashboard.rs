@@ -585,7 +585,10 @@ fn volume_summary(
         let secs = (stats.available as f64 / rate) as u64;
         secs
     });
-    let own_used = bclean_watch::volume_own_used(Path::new(&stats.mount_point));
+    // A lone APFS volume still reports a little less than its container uses (metadata):
+    // only a real neighbor (the Nix store, the system volume) is worth showing apart.
+    let own_used = bclean_watch::volume_own_used(Path::new(&stats.mount_point))
+        .filter(|own| stats.used().saturating_sub(*own) >= (stats.total / 100).max(1 << 30));
     VolumeSummary {
         own_used,
         stats,
