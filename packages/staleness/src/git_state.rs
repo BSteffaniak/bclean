@@ -15,6 +15,15 @@
 //! leftover worktree directory and also forces staleness.
 //!
 //! Main worktrees never force staleness. Results are cached per worktree root.
+//!
+//! Only build output inside such a worktree (under a [`DEFAULT_SKIP_DIRS`] directory such as
+//! `target/`) is forced stale on that basis alone: deleting it loses nothing. The worktree
+//! itself and its sources are forced stale only when the worktree is fully redundant: its
+//! working tree is clean (no modified, staged, or untracked files), and its commits survive
+//! it (merged into the default branch, or still on the branch ref while only the upstream is
+//! gone). A deleted branch, an orphaned worktree, or a leftover directory never qualifies.
+//!
+//! [`DEFAULT_SKIP_DIRS`]: crate::DEFAULT_SKIP_DIRS
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -328,6 +337,8 @@ type Slot = Arc<OnceLock<(PathBuf, WorktreeState)>>;
 #[derive(Debug, Default)]
 pub struct GitStateProvider {
     cache: Mutex<BTreeMap<PathBuf, Slot>>,
+    /// Whether each worktree's working tree is clean (see [`is_clean`]).
+    clean: Mutex<BTreeMap<PathBuf, Arc<OnceLock<bool>>>>,
 }
 
 impl GitStateProvider {
@@ -368,13 +379,65 @@ impl SignalProvider for GitStateProvider {
 
     fn read(&self, target: &Target<'_>) -> Option<SignalReading> {
         let (root, state) = self.worktree_state(target.path)?;
+        let mut detail = state.describe(&root);
+        let forces_stale = state.forces_stale()
+            && (is_build_output(&root, target.path) || {
+                let redundant = self.is_redundant(&root, &state);
+                if !redundant {
+                    detail.push_str(
+                        "; the worktree itself is kept: it has uncommitted work or commits \
+                         nothing else holds",
+                    );
+                }
+                redundant
+            });
         Some(SignalReading {
             kind: SignalKind::GitState,
             last_activity: None,
-            forces_stale: state.forces_stale(),
-            detail: state.describe(&root),
+            forces_stale,
+            detail,
         })
     }
+}
+
+impl GitStateProvider {
+    /// Whether removing the worktree at `root` would lose nothing: its commits survive it and
+    /// its working tree is clean.
+    fn is_redundant(&self, root: &Path, state: &WorktreeState) -> bool {
+        if !matches!(
+            state,
+            WorktreeState::Merged { .. } | WorktreeState::UpstreamGone { .. }
+        ) {
+            return false;
+        }
+        let slot = {
+            let mut cache = self.clean.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(cache.entry(root.to_path_buf()).or_default())
+        };
+        *slot.get_or_init(|| is_clean(root))
+    }
+}
+
+/// Whether `path` is build output inside the worktree at `root`: at or below a directory such
+/// as `target/` or `node_modules/`.
+fn is_build_output(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|rel| {
+        rel.components().any(|c| {
+            c.as_os_str()
+                .to_str()
+                .is_some_and(|name| crate::DEFAULT_SKIP_DIRS.contains(&name))
+        })
+    })
+}
+
+/// Whether the working tree at `root` has no modified, staged, or untracked (non-ignored)
+/// files, per `git status`. Unknown (git missing or failing) counts as not clean.
+fn is_clean(root: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .current_dir(root)
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout.is_empty())
 }
 
 #[cfg(test)]
@@ -460,6 +523,17 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
         let reading = provider.read(&Target::path(&target, true)).unwrap();
         assert!(reading.forces_stale, "{}", reading.detail);
+        // The worktree itself only once nothing in it would be lost.
+        fs::write(merged.join("notes.txt"), b"wip").unwrap();
+        let reading = GitStateProvider::default()
+            .read(&Target::path(&merged, true))
+            .unwrap();
+        assert!(!reading.forces_stale, "untracked work: {}", reading.detail);
+        fs::remove_file(merged.join("notes.txt")).unwrap();
+        let reading = GitStateProvider::default()
+            .read(&Target::path(&merged, true))
+            .unwrap();
+        assert!(reading.forces_stale, "clean and merged: {}", reading.detail);
 
         // Branch deleted underneath the worktree (git refuses `branch -D` for checked-out
         // branches, so delete the ref directly).
@@ -483,6 +557,13 @@ mod tests {
                 branch: "gone".to_owned()
             }
         );
+        // Its commits live only in the worktree: never redundant, even when clean.
+        let reading = provider.read(&Target::path(&gone, true)).unwrap();
+        assert!(!reading.forces_stale, "{}", reading.detail);
+        let reading = provider
+            .read(&Target::path(&gone.join("target"), true))
+            .unwrap();
+        assert!(reading.forces_stale, "{}", reading.detail);
 
         // Orphaned: the git directory was removed.
         let orphan = base.join("repo-wt-orphan");
