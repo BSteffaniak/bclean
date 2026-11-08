@@ -3,8 +3,9 @@
 //! The stream is directory-level (`kFSEventStreamCreateFlagFileEvents` is off): each event
 //! names a directory whose entries changed. Streams are created with `sinceWhen` set to the
 //! persisted event id, so changes made while bclean was not running are replayed; the replay
-//! ends with a `HistoryDone` event, which flushes the coalescer immediately. Subtree rescans the
-//! replay asks for are held back until then and requested once (see [`Events`]).
+//! ends with a `HistoryDone` event, which flushes the coalescer immediately unless rescans are
+//! due. Subtree rescans the replay asks for are held back until then and requested once (see
+//! [`Events`]).
 //!
 //! Event ids are only meaningful for a volume while its FSEvents store UUID
 //! (`FSEventsCopyUUIDForDevice`) is unchanged, so the cursor records the UUID of every root's
@@ -145,6 +146,11 @@ struct CallbackState {
 /// started after the replay covers them all, so subtree rescans are held back while history
 /// is replayed and requested once at `HistoryDone`. Acting on each as it arrives would rescan
 /// whole roots once per coalescer flush, and queue more passes under the rescan budget.
+///
+/// FSEvents can drop events while delivering a large replay under heavy disk load, and its
+/// markers for those may trail `HistoryDone` by a moment. So when rescans are due, the
+/// coalescer is not flushed at `HistoryDone`: its debounce window folds trailing markers into
+/// the same batch.
 struct Events {
     roots: Arc<Roots>,
     /// `Some` while history is being replayed: subtrees to rescan once it is done.
@@ -168,20 +174,20 @@ impl Events {
         }
     }
 
-    /// Translates one event into `out`; returns `true` when the coalescer should flush.
+    /// Translates one event into `out`; returns `true` when the coalescer should flush now.
     fn add(&mut self, path: PathBuf, flag: u32, out: &mut Vec<RawEvent>) -> bool {
         if flag & ffi::kFSEventStreamEventFlagHistoryDone != 0 {
-            if let Some(held) = self.replay.take() {
-                if !held.is_empty() {
-                    log::info!(
-                        "FSEvents: history since the last run needs {} subtree(s) rescanned: {:?}",
-                        held.len(),
-                        held.iter().take(5).collect::<Vec<_>>()
-                    );
-                }
-                out.extend(held.into_iter().map(|p| self.rescan(p)));
+            let held = self.replay.take().unwrap_or_default();
+            if held.is_empty() {
+                return true;
             }
-            return true;
+            log::info!(
+                "FSEvents: history since the last run needs {} subtree(s) rescanned: {:?}",
+                held.len(),
+                held.iter().take(5).collect::<Vec<_>>()
+            );
+            out.extend(held.into_iter().map(|p| self.rescan(p)));
+            return false;
         }
         let lost = flag
             & (ffi::kFSEventStreamEventFlagUserDropped | ffi::kFSEventStreamEventFlagKernelDropped)
@@ -587,7 +593,8 @@ mod tests {
         ));
         assert_eq!(out, vec![RawEvent::Dirty(root.join("a"))]);
         out.clear();
-        assert!(events.add(
+        // Rescans are due, so the debounce window (not an immediate flush) closes the batch.
+        assert!(!events.add(
             PathBuf::new(),
             ffi::kFSEventStreamEventFlagHistoryDone,
             &mut out
@@ -607,5 +614,17 @@ mod tests {
         assert_eq!(events.dropped, 2);
         events.report_dropped();
         assert_eq!(events.dropped, 0);
+    }
+
+    #[test]
+    fn a_clean_replay_flushes_at_once() {
+        let mut events = Events::new(Arc::new(Roots::new(&[PathBuf::from("/nowhere")])), true);
+        let mut out = Vec::new();
+        assert!(events.add(
+            PathBuf::new(),
+            ffi::kFSEventStreamEventFlagHistoryDone,
+            &mut out
+        ));
+        assert_eq!(out, Vec::new());
     }
 }
