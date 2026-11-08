@@ -469,6 +469,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one repository walked through every worktree state
     fn merged_active_deleted_and_orphaned_worktrees() {
         let (_d, base) = setup();
         let repo = base.join("repo");
