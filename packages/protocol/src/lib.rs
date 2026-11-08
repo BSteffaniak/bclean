@@ -16,7 +16,7 @@ mod build;
 mod messages;
 mod transport;
 
-pub use build::executable_build_id;
+pub use build::{executable_build_id, installed_build_id};
 pub use messages::*;
 pub use transport::*;
 

@@ -30,6 +30,7 @@ mod volumes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bclean_actions::{
@@ -352,6 +353,11 @@ struct RootState {
     /// Earliest start of the next watcher-requested rescan (see
     /// `monitor.rescan_budget_percent`).
     rescan_not_before: Option<Instant>,
+    /// Set while the watcher reported lost history that no completed rescan has reconciled
+    /// yet. Snapshots then record `owed_cursor`, the cursor from before the loss, so a restart
+    /// replays the loss and rescans instead of forgetting it.
+    rescan_owed: bool,
+    owed_cursor: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -382,6 +388,8 @@ struct Inner {
     volume_roots: Mutex<Vec<PathBuf>>,
     /// [`EngineOptions::one_filesystem`].
     one_filesystem: bool,
+    /// Set by [`Engine::stop_scans`]: full scans are cancelled as they start.
+    stopping: AtomicBool,
 }
 
 /// The shared bclean engine. Cheap to clone (all state is behind an `Arc`).
@@ -450,6 +458,7 @@ impl Engine {
                 volume_trends: Mutex::new(BTreeMap::new()),
                 volume_roots: Mutex::new(Vec::new()),
                 one_filesystem: options.one_filesystem,
+                stopping: AtomicBool::new(false),
                 exec_lock: tokio::sync::Mutex::new(()),
             }),
         })
@@ -738,6 +747,9 @@ impl Engine {
         let settings = self.settings();
         let progress = Arc::new(ScanProgress::new());
         slot.state.write().progress = Some(Arc::clone(&progress));
+        if self.inner.stopping.load(Ordering::SeqCst) {
+            progress.cancel();
+        }
         let ticker = self.spawn_progress(slot.root.clone(), Arc::clone(&progress));
         let (options, oracle) = Self::scan_options(&settings, &slot.root);
         let rules = Arc::clone(&settings.rules);
@@ -765,6 +777,10 @@ impl Engine {
             state.scanned_at = Some(now);
             state.cursor = cursor;
             state.deferred_summaries.clear();
+            if state.pending_rescans.is_empty() {
+                state.rescan_owed = false;
+                state.owed_cursor = None;
+            }
             state.full_scans += 1;
             state.backend = format!("{:?}", outcome.backend).to_uppercase();
         }
@@ -799,7 +815,11 @@ impl Engine {
                 SnapshotMeta {
                     scanned_at: state.scanned_at.unwrap_or_default(),
                     backend: state.backend.clone(),
-                    cursor: state.cursor.clone(),
+                    cursor: if state.rescan_owed {
+                        state.owed_cursor.clone()
+                    } else {
+                        state.cursor.clone()
+                    },
                 },
             )
         };
@@ -807,6 +827,19 @@ impl Engine {
         tokio::task::spawn_blocking(move || inner.store.save_snapshot(&tree, &meta)).await??;
         slot.state.write().unsaved_since = None;
         Ok(())
+    }
+
+    /// Cancels running full scans and every full scan started from now on, for shutdown.
+    /// Cancelled scans keep the previous tree, and roots that still owe a rescan keep
+    /// recording the cursor from before the loss (see [`Engine::apply_batch`]).
+    pub fn stop_scans(&self) {
+        self.inner.stopping.store(true, Ordering::SeqCst);
+        for slot in self.slots() {
+            let progress = slot.state.read().progress.clone();
+            if let Some(progress) = progress {
+                progress.cancel();
+            }
+        }
     }
 
     /// Persists every root with unsaved changes (for example at shutdown).
@@ -1181,7 +1214,15 @@ impl Engine {
                 .clamp(1, 100),
         );
         let cooldown = started.elapsed() * (100 - percent) / percent;
-        slot.state.write().rescan_not_before = Some(Instant::now() + cooldown);
+        let mut state = slot.state.write();
+        state.rescan_not_before = Some(Instant::now() + cooldown);
+        if result.is_ok() && state.rescan_owed && state.pending_rescans.is_empty() {
+            // Reconciled: the next save may record the current cursor.
+            state.rescan_owed = false;
+            state.owed_cursor = None;
+            state.unsaved_since.get_or_insert_with(Instant::now);
+        }
+        drop(state);
         result.map(drop)
     }
 
@@ -1198,10 +1239,24 @@ impl Engine {
     /// directories (shallowly, or as complete subtree rescans when
     /// [`ChangeBatch::must_full_rescan`] is set).
     ///
+    /// Until those rescans complete, snapshots record the cursor from before the batch, so
+    /// lost history survives a restart even while its rescans wait for the rescan budget.
+    ///
     /// # Errors
     ///
     /// * Same as [`Engine::apply_dirty`]
     pub async fn apply_batch(&self, batch: ChangeBatch) -> Result<()> {
+        if batch.must_full_rescan {
+            for root in self.group_by_root(batch.dirty.clone()).into_keys() {
+                let slot = self.slot(&root);
+                let mut state = slot.state.write();
+                if !state.rescan_owed {
+                    state.rescan_owed = true;
+                    let cursor = state.cursor.clone();
+                    state.owed_cursor = cursor;
+                }
+            }
+        }
         if let Some(cursor) = &batch.cursor {
             let bytes = cursor.to_bytes();
             for slot in self.slots() {

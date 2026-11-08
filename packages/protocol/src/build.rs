@@ -12,13 +12,17 @@ use std::sync::OnceLock;
 #[must_use]
 pub fn executable_build_id() -> Option<String> {
     static ID: OnceLock<Option<String>> = OnceLock::new();
-    ID.get_or_init(|| {
-        let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
-        let mut hasher = DefaultHasher::new();
-        hasher.write(&bytes);
-        Some(format!("{:016x}", hasher.finish()))
-    })
-    .clone()
+    ID.get_or_init(installed_build_id).clone()
+}
+
+/// A hash of the executable file at this process's path as it is now, which differs from
+/// [`executable_build_id`] once a rebuild replaced it (`None` if it cannot be read).
+#[must_use]
+pub fn installed_build_id() -> Option<String> {
+    let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&bytes);
+    Some(format!("{:016x}", hasher.finish()))
 }
 
 #[cfg(test)]
@@ -30,5 +34,6 @@ mod tests {
         let id = executable_build_id().expect("the test binary is readable");
         assert_eq!(id.len(), 16);
         assert_eq!(executable_build_id().as_deref(), Some(id.as_str()));
+        assert_eq!(installed_build_id(), Some(id));
     }
 }

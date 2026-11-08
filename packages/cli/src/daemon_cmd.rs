@@ -1,5 +1,7 @@
 //! `bclean daemon ...`, `bclean service ...`, and `bclean watch`.
 
+use std::io::{Seek as _, Write as _};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
@@ -14,8 +16,15 @@ use crate::output::size;
 ///
 /// # Errors
 ///
-/// * If another daemon is already listening or the endpoint cannot be bound
+/// * If another daemon is already listening, still holds the data directory after
+///   [`LOCK_WAIT`], or the endpoint cannot be bound
 pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
+    let data_dir = ctx
+        .options
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| ctx.dirs.data.clone());
+    let _lock = lock_data_dir(&data_dir).await?;
     let mut options = ctx.client_options();
     options.autostart = false;
     if let Ok(Some(client)) = Client::try_connect(&options).await {
@@ -36,6 +45,61 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
         .context("running the daemon")?;
     log::info!("bclean daemon stopped");
     Ok(())
+}
+
+/// How long a starting daemon waits for the previous one to release the data directory.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
+
+/// Locks `daemon.lock` in `data_dir` for as long as the returned file lives (the process
+/// lifetime), waiting up to [`LOCK_WAIT`] for a daemon that is shutting down.
+///
+/// A daemon stops listening as soon as it is asked to shut down, but finishes cancelling
+/// scans and saving snapshots afterwards. Without the lock, a replacement started meanwhile
+/// would index and write the same snapshots alongside it.
+///
+/// # Errors
+///
+/// * If the lock file cannot be opened, or another daemon still holds it after [`LOCK_WAIT`]
+async fn lock_data_dir(data_dir: &Path) -> anyhow::Result<std::fs::File> {
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating {}", data_dir.display()))?;
+    let path = data_dir.join("daemon.lock");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let deadline = Instant::now() + LOCK_WAIT;
+    let mut waiting = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let holder = std::fs::read_to_string(&path).unwrap_or_default();
+                let holder = holder.trim();
+                if Instant::now() >= deadline {
+                    bail!(
+                        "another bclean daemon (pid {holder}) is still using {}",
+                        data_dir.display()
+                    );
+                }
+                if !waiting {
+                    log::info!("waiting for the previous bclean daemon (pid {holder}) to exit");
+                    waiting = true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("locking {}", path.display()));
+            }
+        }
+    }
+    file.set_len(0)?;
+    file.rewind()?;
+    write!(file, "{}", std::process::id())?;
+    Ok(file)
 }
 
 /// `bclean daemon start`.

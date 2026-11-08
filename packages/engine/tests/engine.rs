@@ -250,6 +250,67 @@ async fn lost_history_rescans_are_rate_limited() {
     assert_eq!(full_scans(), 4);
 }
 
+/// A loss whose rescan waits for the rescan budget must survive a restart: until it is
+/// reconciled, snapshots keep the cursor from before the loss, so it is replayed.
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshots_keep_the_cursor_from_before_unreconciled_losses() {
+    let (dir, root, engine) = setup("[monitor]\nrescan_budget_percent = 1\n").await;
+    engine.scan(&root).await.unwrap();
+    let cursor = |event_id| bclean_watch::WatchCursor::FsEvents {
+        event_id,
+        volume_uuids: BTreeMap::new(),
+    };
+    let lost = |event_id| bclean_watch::ChangeBatch {
+        dirty: vec![root.clone()],
+        must_full_rescan: true,
+        cursor: Some(cursor(event_id)),
+    };
+    // Read through a second engine: loading replaces the first one's in-memory state.
+    let saved = || async {
+        let home = std::fs::canonicalize(dir.path()).unwrap().join("home");
+        let reader = Engine::open(EngineOptions {
+            load: LoadOptions::new(
+                root.clone(),
+                Expander::new(Some(home.clone()), BTreeMap::new()),
+            ),
+            data_dir: Some(home.join("data")),
+            one_filesystem: true,
+        })
+        .await
+        .unwrap();
+        let meta = reader.load_snapshot(&root).await.unwrap().unwrap();
+        bclean_watch::WatchCursor::from_bytes(&meta.cursor.unwrap()).unwrap()
+    };
+
+    // Rescanned at once: the snapshot moves on to the loss's cursor.
+    engine.apply_batch(lost(1)).await.unwrap();
+    assert_eq!(saved().await, cursor(1));
+
+    // Deferred by the budget: later saves keep the cursor from before the loss.
+    engine.apply_batch(lost(2)).await.unwrap();
+    write(&root.join("app/new.rs"), 10);
+    engine
+        .apply_batch(bclean_watch::ChangeBatch {
+            dirty: vec![root.join("app")],
+            must_full_rescan: false,
+            cursor: Some(cursor(3)),
+        })
+        .await
+        .unwrap();
+    engine.persist_all().await.unwrap();
+    assert_eq!(saved().await, cursor(1));
+
+    // Once the deferred rescan ran, the current cursor is saved again.
+    let full_scans = || engine.root_statuses()[0].full_scans;
+    let before = full_scans();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while full_scans() == before && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        engine.refresh_deferred().await.unwrap();
+    }
+    assert_eq!(saved().await, cursor(3));
+}
+
 /// Expanding a directory indexed by nested roots (`/` and `~`) must reach the outer root's
 /// tree too: a client browsing `/` waits for that tree to change.
 #[tokio::test(flavor = "multi_thread")]

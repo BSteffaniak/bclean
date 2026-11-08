@@ -216,6 +216,8 @@ pub async fn run_daemon(engine: Engine, endpoint: Endpoint, version: &str) -> st
     let shutdown = server.shutdown_handle();
     let monitor = tokio::spawn(run_monitor(engine.clone(), shutdown.subscribe()));
     let result = Arc::clone(&server).serve(&endpoint).await;
+    // A full scan can take minutes, and a replacement daemon waits for this one to exit.
+    engine.stop_scans();
     let _ = shutdown.send(true);
     if let Err(e) = monitor.await {
         log::warn!("monitor task failed: {e}");
@@ -241,7 +243,11 @@ pub async fn run_monitor(engine: Engine, mut shutdown: watch::Receiver<bool>) {
     if let Err(e) = engine.refresh_volume_roots().await {
         log::warn!("cannot detect drives to index: {e}");
     }
-    let mut indexing = Indexing::start(&engine).await;
+    // Loading large snapshots takes a while; a shutdown meanwhile must not wait for all of them.
+    let mut indexing = tokio::select! {
+        indexing = Indexing::start(&engine) => indexing,
+        _ = shutdown.wait_for(|stop| *stop) => return,
+    };
 
     let monitor = engine.settings().config().monitor.clone();
     let poll_every = monitor.poll_interval.duration().max(Duration::from_secs(1));

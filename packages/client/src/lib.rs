@@ -81,7 +81,7 @@ impl ClientOptions {
             daemon_exe: None,
             daemon_args: vec!["daemon".into(), "run".into()],
             daemon_log: None,
-            start_timeout: Duration::from_secs(10),
+            start_timeout: Duration::from_secs(30),
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
             restart_on_version_mismatch: true,
             build: None,
@@ -117,6 +117,12 @@ impl Client {
         };
 
         if !needs_restart(&client.server, options) || !options.autostart {
+            return Ok(client);
+        }
+        if outdated_client(&client.server, options) {
+            log::info!(
+                "keeping the bclean daemon: it runs the installed build, and this client is older"
+            );
             return Ok(client);
         }
         log::info!(
@@ -260,6 +266,17 @@ fn needs_restart(server: &ServerHello, options: &ClientOptions) -> bool {
         || (options.restart_on_version_mismatch
             && (server.daemon_version != options.client_version
                 || (options.build.is_some() && server.build != options.build)))
+}
+
+/// Whether only the build differs, because this client predates a rebuild that the daemon
+/// already runs: the client (a long-lived TUI, say) must not replace the daemon with the same
+/// executable it is already running.
+fn outdated_client(server: &ServerHello, options: &ClientOptions) -> bool {
+    server.protocol_version == PROTOCOL_VERSION
+        && server.daemon_version == options.client_version
+        && server.build.is_some()
+        && server.build != options.build
+        && server.build == bclean_protocol::installed_build_id()
 }
 
 /// Spawns the daemon fully detached from the current terminal/session.
