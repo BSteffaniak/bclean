@@ -18,6 +18,18 @@
 //! * `not_under`: path globs; the rule does not match when the entry or any ancestor matches
 //! * `os`: restricts the rule to these operating systems
 //! * `git_ignored`: requires the entry to be (or not be) ignored by git
+//! * `not_live`: the entry must not be, nor hold at any depth, a socket/FIFO/device (with
+//!   `special`) or a name matching one of `names`. With path globs ending in `/**`, it must
+//!   also not lie in a directory (below the shallowest entries those globs reach) that
+//!   directly holds one. Answered from the tree where the children are materialized,
+//!   otherwise from the filesystem; a walk past [`LIVE_WALK_LIMIT`] entries counts as live.
+//!   An entry rejected for being a live item, holding one directly, or lying beside one is
+//!   *sealed* ([`RuleSet::match_sealed`]): the classifier does not look inside it. Rules with
+//!   this condition are never used to summarize directories while scanning, so their contents
+//!   stay in the tree.
+//! * `split` is not a condition: the classifier matches the entries of a directory it would
+//!   match whole one by one instead, when the directory is in use but something directly
+//!   inside it is not
 //!
 //! Globs are case-insensitive on Windows and case-sensitive elsewhere.
 //!
@@ -136,6 +148,14 @@ pub enum Miss {
     },
     /// `CACHEDIR.TAG` exists but lacks the required signature.
     BadCachedirTag,
+    /// The entry is or holds something a running program may use (`not_live`).
+    Live {
+        /// What and where.
+        what: String,
+        /// Nothing under the entry may be matched either: it is a live item, holds one
+        /// directly, or lies in a directory that does.
+        sealed: bool,
+    },
 }
 
 impl std::fmt::Display for Miss {
@@ -151,6 +171,7 @@ impl std::fmt::Display for Miss {
             Self::GitIgnored { expected: true } => f.write_str("not ignored by git"),
             Self::GitIgnored { expected: false } => f.write_str("ignored by git"),
             Self::BadCachedirTag => f.write_str("CACHEDIR.TAG lacks the required signature"),
+            Self::Live { what, .. } => write!(f, "may be in use: {what}"),
         }
     }
 }
@@ -176,7 +197,21 @@ pub struct CompiledRule {
     contains_literals: Vec<OsString>,
     contains_globs: Option<GlobSet>,
     not_under: Vec<(String, GlobSet)>,
+    live: Option<Live>,
 }
+
+/// A compiled [`bclean_model::LiveSpec`].
+#[derive(Debug, Clone)]
+struct Live {
+    special: bool,
+    names: Option<GlobSet>,
+    /// The rule's path globs ending in `/**`, with `/*` instead: the shallowest entries they
+    /// reach.
+    tops: Option<GlobSet>,
+}
+
+/// Most entries examined when probing the filesystem for `not_live`.
+pub const LIVE_WALK_LIMIT: usize = 100_000;
 
 impl CompiledRule {
     /// Rule id.
@@ -333,7 +368,19 @@ fn index_key(path: &Path) -> Cow<'_, Path> {
     if cfg!(windows) {
         Cow::Owned(PathBuf::from(path.to_string_lossy().to_lowercase()))
     } else {
-        Cow::Borrowed(path)
+        firmlinked(path)
+    }
+}
+
+/// `path` as macOS firmlinks present it, so path globs (`/private/var/folders/...`,
+/// `~/Library/Caches/*`) match inside a root opened at the data volume:
+/// `/System/Volumes/Data/Users/me` is `/Users/me`. Elsewhere, `path`.
+fn firmlinked(path: &Path) -> Cow<'_, Path> {
+    match path.strip_prefix("/System/Volumes/Data") {
+        Ok(rest) if cfg!(target_os = "macos") && !rest.as_os_str().is_empty() => {
+            Cow::Owned(Path::new("/").join(rest))
+        }
+        _ => Cow::Borrowed(path),
     }
 }
 
@@ -414,8 +461,9 @@ impl Indexes {
             }
             if rule.spec.matcher.name.is_empty() {
                 for pattern in &rule.path_patterns {
-                    let (parent, _) = pattern.rsplit_once('/').unwrap_or(("", pattern));
-                    if !parent.is_empty() && !has_meta(parent) {
+                    let (parent, last) = pattern.rsplit_once('/').unwrap_or(("", pattern));
+                    // `dir/**` reaches deeper than `dir`'s children: index it by prefix.
+                    if !parent.is_empty() && !has_meta(parent) && !last.contains("**") {
                         by_parent
                             .entry(index_key(Path::new(parent)).into_owned())
                             .or_default()
@@ -579,8 +627,11 @@ impl RuleSet {
     /// directory, else nothing (`None`: the rule's own action applies).
     #[must_use]
     pub fn trim_keep(&self, path: &Path, spec: &RuleSpec) -> Option<Vec<KeepSpec>> {
-        (!spec.keep.is_empty() && path.ancestors().any(|dir| self.trim.is_match(dir)))
-            .then(|| spec.keep.clone())
+        (!spec.keep.is_empty()
+            && firmlinked(path)
+                .ancestors()
+                .any(|dir| self.trim.is_match(dir)))
+        .then(|| spec.keep.clone())
     }
 
     /// Non-fatal issues found while compiling (skipped globs, unexpandable roots).
@@ -680,7 +731,7 @@ impl RuleSet {
         }
         let needs_path =
             rule.paths.is_some() || !rule.not_under.is_empty() || m.git_ignored.is_some();
-        let full = needs_path.then(|| probe.dir.join(probe.name));
+        let full = needs_path.then(|| firmlinked(probe.dir).join(probe.name));
         if let (Some(paths), Some(full)) = (&rule.paths, &full)
             && !paths.is_match(full)
         {
@@ -712,6 +763,11 @@ impl RuleSet {
             if ignored != expected {
                 return Err(Miss::GitIgnored { expected });
             }
+        }
+        if let Some(live) = &rule.live
+            && let Some((what, sealed)) = live.find(probe)
+        {
+            return Err(Miss::Live { what, sealed });
         }
         Ok(())
     }
@@ -757,9 +813,24 @@ impl RuleSet {
     /// unless `heuristics` is set) and resolves priority.
     #[must_use]
     pub fn match_entry(&self, probe: &Probe<'_>, heuristics: bool) -> Option<MatchResult> {
+        self.match_sealed(probe, heuristics).0
+    }
+
+    /// Like [`RuleSet::match_entry`], also telling whether a `not_live` rule rejected the
+    /// entry as sealed ([`Miss::Live`]): then nothing under it may be matched either.
+    #[must_use]
+    pub fn match_sealed(&self, probe: &Probe<'_>, heuristics: bool) -> (Option<MatchResult>, bool) {
         let mut scratch = Vec::new();
         let mut candidates = Vec::new();
-        self.match_with(probe, heuristics, &mut scratch, &mut candidates)
+        let mut sealed = false;
+        let result = self.match_with(
+            probe,
+            heuristics,
+            &mut scratch,
+            &mut candidates,
+            &mut sealed,
+        );
+        (result, sealed)
     }
 
     fn match_with(
@@ -768,6 +839,7 @@ impl RuleSet {
         heuristics: bool,
         scratch: &mut Vec<usize>,
         candidates: &mut Vec<usize>,
+        sealed: &mut bool,
     ) -> Option<MatchResult> {
         self.candidates(probe.dir, probe.name, scratch, candidates);
         if probe.kind == EntryKind::Dir
@@ -778,7 +850,14 @@ impl RuleSet {
         let mut matched: Vec<usize> = candidates
             .iter()
             .copied()
-            .filter(|&i| self.check(i, probe).is_ok())
+            .filter(|&i| match self.check(i, probe) {
+                Ok(()) => true,
+                Err(Miss::Live { sealed: true, .. }) => {
+                    *sealed = true;
+                    false
+                }
+                Err(_) => false,
+            })
             .collect();
         if matched.is_empty()
             && heuristics
@@ -892,10 +971,11 @@ impl RuleSet {
                     siblings: &siblings,
                     contents: Contents::Fs,
                 };
+                // A `not_live` rule needs the directory's contents, which summarizing drops.
                 let best = candidates
                     .iter()
                     .copied()
-                    .filter(|&r| self.check(r, &probe).is_ok())
+                    .filter(|&r| self.rules[r].live.is_none() && self.check(r, &probe).is_ok())
                     .max_by(|&a, &b| self.rules[a].rank().cmp(&self.rules[b].rank()));
                 if let Some(best) = best {
                     let spec = &self.rules[best].spec;
@@ -906,6 +986,152 @@ impl RuleSet {
             }
         });
     }
+}
+
+impl Live {
+    /// Why `probe`'s entry may be live, if it may: what makes it so, and whether nothing under
+    /// it may be matched either (it is a live item, holds one directly, or lies in a directory
+    /// that does). An entry that only holds one deeper is worth looking into.
+    fn find(&self, probe: &Probe<'_>) -> Option<(String, bool)> {
+        let entry = probe.dir.join(probe.name);
+        if let Some(why) = self.judge(probe.name, probe.kind) {
+            return Some((format!("{} ({why})", Path::new(probe.name).display()), true));
+        }
+        if let Some(found) = self.beside(probe, &entry) {
+            return Some((found, true));
+        }
+        if probe.kind != EntryKind::Dir {
+            return None;
+        }
+        let mut seen = 0;
+        match probe.contents {
+            Contents::Tree(tree, node) => self.find_in_tree(tree, node, &entry, &mut seen),
+            Contents::Fs => self.find_in_fs(&entry, &mut seen),
+        }
+        .map(|(rel, why)| {
+            let sealed = rel.components().count() <= 1;
+            let shown = Path::new(probe.name).join(rel);
+            (format!("{} ({why})", shown.display()), sealed)
+        })
+    }
+
+    /// A live item directly inside one of `entry`'s ancestors, up to the shallowest entries
+    /// the rule's `/**` globs reach (a top-level entry has none to check).
+    fn beside(&self, probe: &Probe<'_>, entry: &Path) -> Option<String> {
+        let tops = self.tops.as_ref()?;
+        let depth = firmlinked(entry)
+            .ancestors()
+            .skip(1)
+            .position(|dir| tops.is_match(dir))?
+            + 1;
+        let mut node = match probe.contents {
+            Contents::Tree(tree, node) => Some((tree, node)),
+            Contents::Fs => None,
+        };
+        for dir in entry.ancestors().skip(1).take(depth) {
+            node = node.and_then(|(tree, n)| tree.parent(n).map(|p| (tree, p)));
+            let found = match node {
+                Some((tree, parent)) if tree.has_children(parent) => {
+                    tree.children(parent).find_map(|c| {
+                        self.judge(tree.name(c), tree.kind(c))
+                            .map(|why| (tree.name(c).to_os_string(), why))
+                    })
+                }
+                _ => std::fs::read_dir(dir).ok().and_then(|entries| {
+                    entries.flatten().find_map(|e| {
+                        let name = e.file_name();
+                        self.judge(&name, fs_kind(&e)).map(|why| (name, why))
+                    })
+                }),
+            };
+            if let Some((name, why)) = found {
+                return Some(format!("beside {} ({why})", dir.join(name).display()));
+            }
+        }
+        None
+    }
+
+    fn judge(&self, name: &OsStr, kind: EntryKind) -> Option<&'static str> {
+        if self.special && kind == EntryKind::Other {
+            Some("socket, pipe, or device")
+        } else if self
+            .names
+            .as_ref()
+            .is_some_and(|names| names.is_match(Path::new(name)))
+        {
+            Some("name")
+        } else {
+            None
+        }
+    }
+
+    /// Searches the materialized children of `node`, each level before the next (so a live
+    /// item directly inside is found first); summarized directories are walked.
+    fn find_in_tree(
+        &self,
+        tree: &Tree,
+        node: NodeId,
+        path: &Path,
+        seen: &mut usize,
+    ) -> Option<(PathBuf, &'static str)> {
+        if !tree.has_children(node) && tree.flags(node).contains(NodeFlags::SUMMARIZED) {
+            return self.find_in_fs(path, seen);
+        }
+        if let Some((name, why)) = tree.children(node).find_map(|c| {
+            self.judge(tree.name(c), tree.kind(c))
+                .map(|why| (tree.name(c), why))
+        }) {
+            return Some((PathBuf::from(name), why));
+        }
+        tree.children(node)
+            .filter(|&c| tree.kind(c) == EntryKind::Dir)
+            .find_map(|c| {
+                let name = tree.name(c);
+                self.find_in_tree(tree, c, &path.join(name), seen)
+                    .map(|(rel, why)| (Path::new(name).join(rel), why))
+            })
+    }
+
+    /// Walks `dir` on disk, each level before the next, up to [`LIVE_WALK_LIMIT`] entries
+    /// (more counts as live).
+    fn find_in_fs(&self, dir: &Path, seen: &mut usize) -> Option<(PathBuf, &'static str)> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return None;
+        };
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            *seen += 1;
+            if *seen > LIVE_WALK_LIMIT {
+                return Some((PathBuf::new(), "too many entries to check"));
+            }
+            let kind = fs_kind(&entry);
+            let name = entry.file_name();
+            if let Some(why) = self.judge(&name, kind) {
+                return Some((PathBuf::from(name), why));
+            }
+            if kind == EntryKind::Dir {
+                subdirs.push(name);
+            }
+        }
+        subdirs.into_iter().find_map(|name| {
+            self.find_in_fs(&dir.join(&name), seen)
+                .map(|(rel, why)| (Path::new(&name).join(rel), why))
+        })
+    }
+}
+
+fn fs_kind(entry: &std::fs::DirEntry) -> EntryKind {
+    entry.file_type().map_or(EntryKind::Other, |t| {
+        if t.is_symlink() {
+            EntryKind::Symlink
+        } else if t.is_dir() {
+            EntryKind::Dir
+        } else if t.is_file() {
+            EntryKind::File
+        } else {
+            EntryKind::Other
+        }
+    })
 }
 
 /// Whether `path` is a `CACHEDIR.TAG` file starting with the specification's signature.
@@ -950,6 +1176,14 @@ fn compile_rule(
         rule.path_patterns.iter().map(String::as_str),
         true,
     )?;
+    if let Some(live) = &mut rule.live {
+        let tops: Vec<String> = rule
+            .path_patterns
+            .iter()
+            .filter_map(|p| p.strip_suffix("/**").map(|base| format!("{base}/*")))
+            .collect();
+        live.tops = glob_set(id, "path", tops.iter().map(String::as_str), true)?;
+    }
     Ok(Some(rule))
 }
 
@@ -1010,9 +1244,26 @@ fn compile_rule_unchecked(
             not_under.push((raw.clone(), set));
         }
     }
+    let live = m
+        .not_live
+        .as_ref()
+        .map(|spec| {
+            Ok::<_, RuleError>(Live {
+                special: spec.special,
+                names: glob_set(
+                    id,
+                    "not_live.names",
+                    spec.names.iter().map(String::as_str),
+                    false,
+                )?,
+                tops: None,
+            })
+        })
+        .transpose()?;
     Ok(CompiledRule {
         id: id.to_owned(),
         synthetic: None,
+        live,
         names,
         paths: None,
         path_patterns: Vec::new(),
@@ -1129,6 +1380,36 @@ priority = 1000
             &mut out,
         );
         assert_eq!(out, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn prune_oracle_keeps_the_contents_a_not_live_rule_needs() {
+        let rules = r#"
+[rules.temp]
+match = { path = ["/t/*"], not_live = { special = true } }
+ephemeral = { kind = "TEMP" }
+"#;
+        let set = RuleSet::compile(&config(rules), &expander(Path::new("/home/u"))).unwrap();
+        let children = entries(&[("job", EntryKind::Dir)]);
+        let mut out = Vec::new();
+        set.ephemeral_children(Path::new("/t"), &children, &mut out);
+        assert_eq!(out, Vec::<usize>::new());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn path_rules_match_through_the_data_volume() {
+        let set = RuleSet::compile(&config(RULES), &expander(Path::new("/Users/u"))).unwrap();
+        let children = entries(&[("Homebrew", EntryKind::Dir)]);
+        let probe = Probe {
+            dir: Path::new("/System/Volumes/Data/Users/u/Library/Caches"),
+            name: OsStr::new("Homebrew"),
+            kind: EntryKind::Dir,
+            siblings: &children,
+            contents: Contents::Fs,
+        };
+        let r = set.match_entry(&probe, false).unwrap();
+        assert_eq!(set.rule(r.winner).id(), "brew");
     }
 
     #[test]

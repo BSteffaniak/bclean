@@ -54,14 +54,64 @@ os = ["MACOS"]
 
 [rules.macos_var_folders]
 category = "os"
-description = "Per-user temporary and cache folders managed by macOS (/private/var/folders); cleaned by the OS"
+description = "Per-user cache folders managed by macOS (/private/var/folders/*/*/C and 0); cleaned by the OS"
 confidence = "HIGH"
 priority = 10
 ephemeral = { kind = "TEMP", regen_cost = "FREE" }
 action = { kind = "REPORT" }
 [rules.macos_var_folders.match]
-path = ["/private/var/folders"]
+path = ["/private/var/folders/*/*/C", "/private/var/folders/*/*/0"]
 os = ["MACOS"]
+
+# Temporary files are judged by the newest write anywhere inside each entry. Sockets, pipes,
+# pid and lock files are left alone, with the directory directly holding them: a running
+# program may use one for weeks without writing to it. Entries holding one deeper, and
+# folders shared by many runs (`/tmp/<tool>-<uid>`) that are in use, are cleaned entry by
+# entry instead (`/**` with `split`). At a low priority, so a specific rule (a Cargo `target/`)
+# matching the same entry wins.
+[rules.macos_user_temp]
+category = "os"
+description = "Per-user temporary files ($TMPDIR, and X/ code-signing clones) under /private/var/folders"
+confidence = "HIGH"
+priority = -50
+ephemeral = { kind = "TEMP", regen_cost = "FREE" }
+stale = { after = "3d", signals = ["FS_TIMES"] }
+action = { kind = "DELETE" }
+[rules.macos_user_temp.match]
+kind = "ANY"
+path = ["/private/var/folders/*/*/T/**", "/private/var/folders/*/*/X/**"]
+os = ["MACOS"]
+split = true
+not_live = { special = true, names = [
+    "*.pid",
+    "*.lock",
+    "*.lck",
+    "*.sock",
+    "*.socket",
+    "LOCK",
+] }
+
+[rules.unix_temp]
+category = "os"
+description = "Temporary files (/tmp, /var/tmp)"
+confidence = "HIGH"
+priority = -50
+ephemeral = { kind = "TEMP", regen_cost = "FREE" }
+stale = { after = "3d", signals = ["FS_TIMES"] }
+action = { kind = "DELETE" }
+[rules.unix_temp.match]
+kind = "ANY"
+path = ["/tmp/**", "/var/tmp/**", "/private/tmp/**", "/private/var/tmp/**"]
+os = ["MACOS", "LINUX"]
+split = true
+not_live = { special = true, names = [
+    "*.pid",
+    "*.lock",
+    "*.lck",
+    "*.sock",
+    "*.socket",
+    "LOCK",
+] }
 
 [rules.xdg_user_caches]
 category = "os"
@@ -114,14 +164,16 @@ os = ["LINUX"]
 category = "os"
 description = "Per-user temporary files (%LOCALAPPDATA%/Temp)"
 confidence = "HIGH"
-priority = 10
+priority = -50
 ephemeral = { kind = "TEMP", regen_cost = "FREE" }
-stale = { after = "7d" }
+stale = { after = "7d", signals = ["FS_TIMES"] }
 action = { kind = "DELETE" }
 [rules.windows_temp.match]
 kind = "ANY"
-path = ["%LOCALAPPDATA%/Temp/*"]
+path = ["%LOCALAPPDATA%/Temp/**"]
 os = ["WINDOWS"]
+split = true
+not_live = { special = true, names = ["*.pid", "*.lock", "*.lck", "LOCK"] }
 
 [rules.windows_crash_dumps]
 category = "os"

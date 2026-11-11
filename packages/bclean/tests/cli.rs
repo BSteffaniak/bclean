@@ -47,7 +47,11 @@ fn fixture(extra_config: &str) -> Fixture {
     std::fs::write(
         &config,
         format!(
-            "[monitor]\nindex_roots = []\nvolumes = [\"{}\"]\n{extra_config}",
+            // The fixture lives in a temporary directory, which the temp rules would claim
+            // whole.
+            "[monitor]\nindex_roots = []\nvolumes = [\"{}\"]\n\
+             [rules.macos_user_temp]\nenabled = false\n[rules.unix_temp]\nenabled = false\n\
+             [rules.windows_temp]\nenabled = false\n{extra_config}",
             home.display()
         ),
     )

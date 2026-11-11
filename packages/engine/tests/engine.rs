@@ -12,6 +12,15 @@ fn write(path: &Path, bytes: usize) {
     std::fs::write(path, vec![1_u8; bytes]).unwrap();
 }
 
+const NO_TEMP_RULES: &str = "
+[rules.macos_user_temp]
+enabled = false
+[rules.unix_temp]
+enabled = false
+[rules.windows_temp]
+enabled = false
+";
+
 async fn setup(config: &str) -> (tempfile::TempDir, PathBuf, Engine) {
     let dir = tempfile::tempdir().unwrap();
     let base = std::fs::canonicalize(dir.path()).unwrap();
@@ -22,6 +31,8 @@ async fn setup(config: &str) -> (tempfile::TempDir, PathBuf, Engine) {
     write(&root.join("web/package.json"), 2);
     write(&root.join("web/node_modules/a/index.js"), 10_000);
     write(&home.join(".config/bclean/config.toml"), 0);
+    // The fixture lives in a temporary directory, which the temp rules would claim whole.
+    let config = format!("{NO_TEMP_RULES}\n{config}");
     std::fs::write(home.join(".config/bclean/config.toml"), config).unwrap();
     let expander = Expander::new(Some(home.clone()), BTreeMap::new());
     let engine = Engine::open(EngineOptions {

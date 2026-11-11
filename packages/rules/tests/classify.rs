@@ -64,8 +64,10 @@ fn scan(root: &Path) -> Tree {
             EntryKind::Symlink
         } else if m.is_dir() {
             EntryKind::Dir
-        } else {
+        } else if m.is_file() {
             EntryKind::File
+        } else {
+            EntryKind::Other
         };
         let mtime = FileTime::from_last_modification_time(&m).unix_seconds();
         let size = if m.is_dir() { 0 } else { m.len() };
@@ -370,5 +372,143 @@ fn merged_worktree_forces_stale() {
             .signals
             .iter()
             .any(|s| s.forces_stale && s.detail.contains("merged"))
+    );
+}
+
+/// Temporary entries holding a socket or a lock file at any depth are never matched: a
+/// running program may use them without writing to them.
+#[cfg(unix)]
+#[test]
+fn temp_entries_that_may_be_live_are_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let tmp = root.join("t");
+    write(&tmp.join("old/data.bin"), 100);
+    write(&tmp.join("pidded/run/app.pid"), 5);
+    write(&tmp.join("fresh/data.bin"), 100);
+    fs::create_dir_all(tmp.join("srv/a")).unwrap();
+    let _nested = std::os::unix::net::UnixListener::bind(tmp.join("srv/a/s")).unwrap();
+    let _top = std::os::unix::net::UnixListener::bind(tmp.join("top.s")).unwrap();
+    age(&tmp, NOW - 30 * DAY);
+    set_file_mtime(
+        tmp.join("fresh/data.bin"),
+        FileTime::from_unix_time(NOW - DAY, 0),
+    )
+    .unwrap();
+
+    let text = format!(
+        r#"
+[classify]
+gitignored_heuristic = false
+signals = ["FS_TIMES"]
+
+[rules.temp]
+match = {{ kind = "ANY", path = ["{tmp}/*"], not_live = {{ special = true, names = ["*.pid"] }} }}
+ephemeral = {{ kind = "TEMP", regen_cost = "FREE" }}
+stale = {{ after = "3d" }}
+action = {{ kind = "DELETE" }}
+"#,
+        tmp = tmp.display()
+    );
+    let config = bclean_config::parse_str(&text).unwrap();
+    let set = RuleSet::compile(&config, &Expander::new(None, BTreeMap::new())).unwrap();
+    let engine = StalenessEngine::with_defaults(NOW);
+    let classifier = Classifier::new(&set, &engine);
+    let results = classifier.classify_tree(&scan(&root));
+    let by_name: BTreeMap<String, bool> = results
+        .iter()
+        .map(|e| {
+            (
+                e.path.file_name().unwrap().to_string_lossy().into_owned(),
+                e.classification.staleness.stale,
+            )
+        })
+        .collect();
+    assert_eq!(
+        by_name,
+        BTreeMap::from([("fresh".to_owned(), false), ("old".to_owned(), true)])
+    );
+
+    // `explain` (no tree) walks the filesystem and says why.
+    let e = classifier.explain(&tmp.join("srv")).unwrap();
+    assert!(e.classification.rule_id.is_none());
+    assert!(
+        e.near_misses
+            .iter()
+            .any(|m| m.reason.contains("may be in use") && m.reason.contains("srv/a/s")),
+        "{:?}",
+        e.near_misses
+    );
+}
+
+/// With `/**` globs, only the directory directly holding a live item is left alone (whole),
+/// and with `split` a folder shared by a run still going gives up its finished runs.
+#[cfg(unix)]
+#[test]
+fn temp_is_cleaned_around_live_items_and_busy_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let tmp = root.join("u");
+    write(&tmp.join("shared/old-run/data"), 100);
+    write(&tmp.join("shared/new-run/data"), 100);
+    write(&tmp.join("srv/r/state.db"), 100);
+    write(&tmp.join("srv/old-log/x"), 100);
+    write(&tmp.join("whole-old/x"), 100);
+    let _live = std::os::unix::net::UnixListener::bind(tmp.join("srv/r/server.sock")).unwrap();
+    age(&tmp, NOW - 30 * DAY);
+    for fresh in ["shared/new-run/data", "shared/new-run", "shared"] {
+        set_file_mtime(tmp.join(fresh), FileTime::from_unix_time(NOW - DAY, 0)).unwrap();
+    }
+
+    let text = format!(
+        r#"
+[classify]
+gitignored_heuristic = false
+
+[rules.temp]
+match = {{ kind = "ANY", path = ["{tmp}/**"], not_live = {{ special = true }}, split = true }}
+ephemeral = {{ kind = "TEMP", regen_cost = "FREE" }}
+stale = {{ after = "3d", signals = ["FS_TIMES"] }}
+action = {{ kind = "DELETE" }}
+"#,
+        tmp = tmp.display()
+    );
+    let config = bclean_config::parse_str(&text).unwrap();
+    let set = RuleSet::compile(&config, &Expander::new(None, BTreeMap::new())).unwrap();
+    let engine = StalenessEngine::with_defaults(NOW);
+    let classifier = Classifier::new(&set, &engine);
+    let results = classifier.classify_tree(&scan(&root));
+    let by_path: BTreeMap<String, bool> = results
+        .iter()
+        .map(|e| {
+            (
+                e.path
+                    .strip_prefix(&tmp)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                e.classification.staleness.stale,
+            )
+        })
+        .collect();
+    assert_eq!(
+        by_path,
+        BTreeMap::from([
+            ("shared/new-run".to_owned(), false),
+            ("shared/old-run".to_owned(), true),
+            ("srv/old-log".to_owned(), true),
+            ("whole-old".to_owned(), true),
+        ])
+    );
+
+    // Asked about directly, an entry beside the socket is still refused.
+    let e = classifier.explain(&tmp.join("srv/r/state.db")).unwrap();
+    assert!(e.classification.rule_id.is_none());
+    assert!(
+        e.near_misses
+            .iter()
+            .any(|m| m.reason.contains("beside") && m.reason.contains("server.sock")),
+        "{:?}",
+        e.near_misses
     );
 }

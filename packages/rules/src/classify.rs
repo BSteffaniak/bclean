@@ -493,11 +493,13 @@ impl<'a> Classifier<'a> {
     pub fn classify_subtree(&self, tree: &Tree, start: NodeId) -> Vec<ClassifiedEntry> {
         let mut candidates = Vec::new();
         let mut matched: BTreeSet<NodeId> = BTreeSet::new();
-        if let Some(c) = self.match_start(tree, start) {
-            matched.insert(c.node);
-            candidates.push(c);
-        } else {
-            self.walk(tree, start, &mut candidates, &mut matched);
+        match self.match_start(tree, start) {
+            (Some(c), _) if !self.splits(tree, c.node, &c.path, c.rule) => {
+                matched.insert(c.node);
+                candidates.push(c);
+            }
+            (_, true) => {}
+            _ => self.walk(tree, start, &mut candidates, &mut matched),
         }
         self.durable_candidates(tree, start, &matched, &mut candidates);
 
@@ -518,7 +520,7 @@ impl<'a> Classifier<'a> {
     /// matches it.
     #[must_use]
     pub fn classify_node(&self, tree: &Tree, node: NodeId) -> Option<Classification> {
-        let candidate = self.match_start(tree, node)?;
+        let candidate = self.match_start(tree, node).0?;
         self.evaluate(tree, candidate).map(|e| e.classification)
     }
 
@@ -526,11 +528,35 @@ impl<'a> Classifier<'a> {
         self.rules.classify.gitignored_heuristic
     }
 
-    /// Matches `node` itself, using tree siblings or (for the tree root) a directory listing.
-    fn match_start(&self, tree: &Tree, node: NodeId) -> Option<Candidate> {
+    /// Whether the directory matched as `candidate` is better matched entry by entry (see
+    /// [`bclean_model::MatchSpec::split`]): it is in use itself, but something directly inside
+    /// it is not.
+    fn splits(&self, tree: &Tree, node: NodeId, path: &Path, rule: Option<usize>) -> bool {
+        let Some(spec) = rule.map(|r| self.rules.rule(r).spec()) else {
+            return false;
+        };
+        if !spec.matcher.split || tree.kind(node) != EntryKind::Dir || !tree.has_children(node) {
+            return false;
+        }
+        let policy = policy_for(self.rules, Some(spec));
+        let stale = |node: NodeId, path: &Path| {
+            self.engine
+                .evaluate(&Target::node(tree, node, path), &policy)
+                .stale
+        };
+        !stale(node, path)
+            && tree
+                .children(node)
+                .any(|c| stale(c, &path.join(tree.name(c))))
+    }
+
+    /// Matches `node` itself, using tree siblings or (for the tree root) a directory listing;
+    /// also tells whether nothing under it may be matched (see [`RuleSet::match_sealed`]).
+    fn match_start(&self, tree: &Tree, node: NodeId) -> (Option<Candidate>, bool) {
         let path = tree.path(node);
-        let dir = path.parent()?;
-        let name = path.file_name()?;
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return (None, false);
+        };
         let kind = tree.kind(node);
         let names: Vec<OsString> = tree.parent(node).map_or_else(
             || list_names(dir).into_iter().map(|(n, _)| n).collect(),
@@ -548,14 +574,18 @@ impl<'a> Classifier<'a> {
             siblings: &owned,
             contents: Contents::Tree(tree, node),
         };
-        let result = self.rules.match_entry(&probe, self.heuristics())?;
+        let (result, sealed) = self.rules.match_sealed(&probe, self.heuristics());
+        let Some(result) = result else {
+            return (None, sealed);
+        };
         let reasons = match_reasons(self.rules, &result, &probe);
-        Some(Candidate {
+        let candidate = Candidate {
             node,
             path: path.clone(),
             rule: Some(result.winner),
             reasons,
-        })
+        };
+        (Some(candidate), false)
     }
 
     fn walk(
@@ -597,18 +627,25 @@ impl<'a> Classifier<'a> {
                     siblings: &entries,
                     contents: Contents::Tree(tree, child),
                 };
-                if let Some(result) = self.rules.match_entry(&probe, heuristics) {
+                let (result, sealed) = self.rules.match_sealed(&probe, heuristics);
+                if let Some(result) = result {
+                    let path = dir_path.join(entry.name);
+                    if self.splits(tree, child, &path, Some(result.winner)) {
+                        stack.push((child, path));
+                        continue;
+                    }
                     let reasons = match_reasons(self.rules, &result, &probe);
                     matched.insert(child);
                     candidates.push(Candidate {
                         node: child,
-                        path: dir_path.join(entry.name),
+                        path,
                         rule: Some(result.winner),
                         reasons,
                     });
                     continue;
                 }
-                if entry.kind == EntryKind::Dir
+                if !sealed
+                    && entry.kind == EntryKind::Dir
                     && entry.name != ".git"
                     && tree.has_children(child)
                     && !flags.contains(NodeFlags::EXCLUDED)

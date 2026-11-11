@@ -61,6 +61,14 @@ fn fixture() -> Fixture {
 index_roots = []
 volumes = ["{home}"]
 
+# The fixture lives in a temporary directory, which the temp rules would claim whole.
+[rules.macos_user_temp]
+enabled = false
+[rules.unix_temp]
+enabled = false
+[rules.windows_temp]
+enabled = false
+
 [rules.junk_cache]
 match = {{ name = ["junkcache"] }}
 ephemeral = {{ kind = "TEMP", regen_cost = "FREE" }}

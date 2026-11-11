@@ -195,6 +195,8 @@ mod tests {
             "not_under",
             "os",
             "git_ignored",
+            "not_live",
+            "split",
         ];
         const STALE_KEYS: &[&str] = &["after", "signals", "project_idle"];
         const EPHEMERAL_KEYS: &[&str] = &["kind", "regen_cost"];

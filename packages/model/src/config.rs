@@ -256,6 +256,26 @@ pub struct MatchSpec {
     pub os: Vec<Os>,
     /// Require (or forbid) the entry to be gitignored.
     pub git_ignored: Option<bool>,
+    /// Never match an entry that is, or holds at any depth, something a running program may
+    /// still use while leaving it untouched (temporary files are judged by their writes only).
+    /// With path globs ending in `/**`, the parts of such an entry that hold nothing live are
+    /// matched instead, except in a directory that directly holds a live item.
+    pub not_live: Option<LiveSpec>,
+    /// A matched directory that is in use itself but holds unused entries is not matched
+    /// whole: its entries are matched one by one instead, so the unused ones can go (the
+    /// path globs must reach them, e.g. `/tmp/**`). For folders shared by many runs, such as
+    /// a tool's per-user directory in `/tmp`.
+    pub split: bool,
+}
+
+/// What counts as possibly in use by a running program ([`MatchSpec::not_live`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct LiveSpec {
+    /// Sockets, FIFOs, and devices count (a server's socket stays unchanged while it listens).
+    pub special: bool,
+    /// Basename globs that count (`*.pid`, `*.lock`).
+    pub names: Vec<String>,
 }
 
 /// What kind of regenerable content an ephemeral item is.

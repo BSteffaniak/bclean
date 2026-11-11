@@ -92,6 +92,23 @@ whose branch was merged or deleted, build output is cleanable right away; the wo
 only ever marked unused once removing it would lose nothing (a clean working tree, with its
 commits on the default branch or still on the branch ref).
 
+### Temporary files
+
+Each entry of `/tmp`, `/var/tmp`, and macOS's per-user `$TMPDIR` (and its `X/` code-signing
+clones) is cleanable once nothing inside it has been written for 3 days (7 on Windows). A
+directory directly holding a socket, pipe, pid file, or lock file is left alone with everything
+in it: a running program may use one for weeks without writing to it. Around it, the rest is
+offered piece by piece, as are the finished runs in a folder shared by many (a tool's
+`/tmp/<tool>-<uid>`) while one run still uses it. Any rule can do the same:
+
+```toml
+[rules.my_scratch]
+match = { kind = "ANY", path = ["~/scratch/**"], not_live = { special = true, names = ["*.pid"] }, split = true }
+ephemeral = { kind = "TEMP", regen_cost = "FREE" }
+stale = { after = "3d", signals = ["FS_TIMES"] }
+action = { kind = "DELETE" }
+```
+
 ### Keeping outputs
 
 Rules can name outputs worth keeping, by glob relative to the matched directory (`cargo_target`
