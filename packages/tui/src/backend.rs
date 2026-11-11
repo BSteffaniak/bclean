@@ -61,6 +61,12 @@ pub trait Backend: Send + 'static {
     /// underlying data changes (throttled).
     fn refresh_dashboard(&mut self) {}
 
+    /// Sets the idle time after which the dashboard counts items as unused (`None`: each
+    /// rule's thresholds), for this and later dashboard data. Callers refresh afterwards.
+    fn set_safe_after(&mut self, secs: Option<u64>) {
+        let _ = secs;
+    }
+
     /// Browses the tree rooted at `path` instead of the current root: the mount point of
     /// another drive, or the root browsed before it. The backend loads it (scanning it first
     /// if it is not indexed yet) and sends it as [`BackendEvent::Tree`]; progress and updates
@@ -94,6 +100,9 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
     }
     fn refresh_dashboard(&mut self) {
         (**self).refresh_dashboard();
+    }
+    fn set_safe_after(&mut self, secs: Option<u64>) {
+        (**self).set_safe_after(secs);
     }
     fn open_root(&mut self, path: PathBuf) {
         (**self).open_root(path);

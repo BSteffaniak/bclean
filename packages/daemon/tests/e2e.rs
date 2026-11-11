@@ -345,6 +345,7 @@ async fn daemon_flows_through_the_client() {
         .request(Request::Dashboard {
             roots: vec![fx.root.clone()],
             one_filesystem: false,
+            safe_after_secs: None,
         })
         .await
         .unwrap()

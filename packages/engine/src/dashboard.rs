@@ -101,6 +101,7 @@ impl Engine {
         &self,
         extra_roots: &[PathBuf],
         one_filesystem: bool,
+        safe_after: Option<std::time::Duration>,
     ) -> Result<DashboardSummary> {
         let now = unix_now();
         let mut wanted: BTreeSet<PathBuf> = self.index_roots().into_iter().collect();
@@ -116,10 +117,11 @@ impl Engine {
         let in_scope =
             |path: &Path| !one_filesystem || extra.iter().any(|e| same_filesystem(e, path));
         wanted.retain(|root| in_scope(root));
-        let scope = self.scoped_roots(&wanted);
+        let scope = self.scoped_roots(&wanted, safe_after, now);
 
         let mut summary = DashboardSummary {
             generated_at: now,
+            safe_after_secs: safe_after.map(|d| d.as_secs()),
             ..DashboardSummary::default()
         };
         let items = collect_items(&scope);
@@ -172,19 +174,31 @@ impl Engine {
         Ok(summary)
     }
 
-    /// Loaded roots among `wanted`, outermost first.
-    fn scoped_roots(&self, wanted: &BTreeSet<PathBuf>) -> Vec<ScopedRoot> {
+    /// Loaded roots among `wanted`, outermost first, with staleness judged against
+    /// `safe_after` (see [`judge_against`]) when it is given.
+    fn scoped_roots(
+        &self,
+        wanted: &BTreeSet<PathBuf>,
+        safe_after: Option<std::time::Duration>,
+        now: i64,
+    ) -> Vec<ScopedRoot> {
         let mut scope: Vec<ScopedRoot> = self
             .slots()
             .into_iter()
             .filter(|slot| wanted.contains(&slot.root))
             .filter_map(|slot| {
                 let state = slot.state.read();
+                let mut classes = state.classes.clone();
+                if let Some(window) = safe_after {
+                    for class in classes.values_mut() {
+                        judge_against(&mut class.staleness, window, now);
+                    }
+                }
                 Some(ScopedRoot {
                     logical: logical(&slot.root),
                     path: slot.root.clone(),
                     tree: state.tree.clone()?,
-                    classes: state.classes.clone(),
+                    classes,
                     scanned_at: state.scanned_at,
                     scanning: state.progress.is_some(),
                 })
@@ -310,6 +324,20 @@ const fn severity_rank(severity: Severity) -> u8 {
         Severity::Info => 0,
         Severity::Warning => 1,
         Severity::Critical => 2,
+    }
+}
+
+/// Re-judges `staleness` against an idle `window` instead of its rule's thresholds: stale
+/// when a signal forces it (a merged branch), or when the item (build output: its project)
+/// has been idle at least `window`. No activity known keeps the verdict.
+fn judge_against(staleness: &mut bclean_model::Staleness, window: std::time::Duration, now: i64) {
+    if staleness.signals.iter().any(|s| s.forces_stale) {
+        staleness.stale = true;
+        return;
+    }
+    if let Some(last) = staleness.last_activity {
+        let idle = u64::try_from(now.saturating_sub(last)).unwrap_or(0);
+        staleness.stale = idle >= window.as_secs();
     }
 }
 

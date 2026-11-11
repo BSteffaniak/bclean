@@ -119,6 +119,10 @@ Plain `bclean` opens a dashboard computed from the daemon's index (instant, no s
   "full in ~N days" forecast.
 - **Reclaimable:** the total, how much is safe to clean right now (what an automatic clean
   would select), and the ephemeral × stale breakdown. `c` plans a clean of everything safe.
+  `i` / `I` shorten or lengthen how long something must have been idle to count as safe
+  (each rule's threshold, then 7d, 1d, 12h, 6h, 3h, 1h, 15m, any idle; build output goes by
+  its project's idle time), for the dashboard and the clean-safe plan, which is rebuilt when
+  the window changes. Items in use stay out whatever the window.
 - **By kind / ecosystem** (`v`): build output, dependencies, caches, ... or rust, node, xcode,
   ... Enter opens the Reclaimable lens filtered to that row.
 - **Top candidates** and **Projects**: where reclaimable data lives. Enter shows it in the

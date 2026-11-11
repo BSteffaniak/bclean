@@ -222,6 +222,8 @@ async fn root_level_changes_never_rescan_unchanged_subtrees() {
 #[tokio::test(flavor = "multi_thread")]
 async fn automatic_cleaning_skips_build_output_of_active_projects() {
     let (_dir, root, engine) = setup("").await;
+    // Above the default selection's 1 MiB minimum.
+    write(&root.join("app/target/debug/deps/libbig.rlib"), 2 << 20);
     engine.scan(&root).await.unwrap();
     let target = root.join("app/target");
     let class = engine
@@ -236,11 +238,23 @@ async fn automatic_cleaning_skips_build_output_of_active_projects() {
         "fresh build output is not planned automatically"
     );
     let summary = engine
-        .dashboard(std::slice::from_ref(&root), false)
+        .dashboard(std::slice::from_ref(&root), false, None)
         .await
         .unwrap();
     assert!(summary.reclaimable.active >= class.size);
     assert!(!summary.reclaimable.safe_paths.contains(&target));
+
+    // Asked for anything idle at all (and nothing works in the project), it is safe.
+    let summary = engine
+        .dashboard(
+            std::slice::from_ref(&root),
+            false,
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.safe_after_secs, Some(0));
+    assert!(summary.reclaimable.safe_paths.contains(&target));
 }
 
 /// Inside a `[trim]` path, cleaning a Cargo `target/` keeps its release binaries; elsewhere
@@ -542,7 +556,7 @@ async fn dashboard_summarizes_reclaimable_data() {
     let (_dir, root, engine) = setup("").await;
     engine.scan(&root).await.unwrap();
     let summary = engine
-        .dashboard(std::slice::from_ref(&root), false)
+        .dashboard(std::slice::from_ref(&root), false, None)
         .await
         .unwrap();
 

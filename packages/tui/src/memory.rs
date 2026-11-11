@@ -269,6 +269,14 @@ impl Backend for InMemoryBackend {
         }
     }
 
+    fn set_safe_after(&mut self, secs: Option<u64>) {
+        self.log.push(format!("set_safe_after {secs:?}"));
+        // The canned summary stays as it is, labeled with the window it now answers for.
+        if let Some(summary) = &mut self.dashboard {
+            summary.safe_after_secs = secs;
+        }
+    }
+
     fn refresh_dashboard(&mut self) {
         self.log.push("refresh_dashboard".to_owned());
         if let Some(summary) = &self.dashboard {

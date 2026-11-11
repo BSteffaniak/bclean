@@ -240,6 +240,12 @@ pub struct App<B: Backend> {
     pub(crate) alerts: Vec<AlertEvent>,
     pub(crate) dashboard: Option<Box<DashboardSummary>>,
     pub(crate) dash: DashState,
+    /// Idle time after which the dashboard counts items as unused (`None`: the rules'
+    /// thresholds), changed with `i`/`I`.
+    pub(crate) safe_after: Option<u64>,
+    /// The open plan is the clean-safe plan, rebuilt when `safe_after` changes; `Some` while
+    /// waiting for the dashboard computed with the new window.
+    pub(crate) safe_plan: Option<SafePlan>,
     /// Kind/category restriction of flat lenses (from a dashboard drill-down).
     pub(crate) lens_filter: Option<LensFilter>,
     initial_path: Option<PathBuf>,
@@ -297,6 +303,8 @@ impl<B: Backend> App<B> {
             volumes: Vec::new(),
             alerts: Vec::new(),
             dashboard: None,
+            safe_after: None,
+            safe_plan: None,
             dash: DashState::default(),
             lens_filter: None,
             initial_path,
@@ -461,7 +469,13 @@ impl<B: Backend> App<B> {
             BackendEvent::Execution(event) => self.apply_execution(event),
             BackendEvent::Dashboard(summary) => {
                 self.dash.clamp(&summary);
+                let rebuild = self.safe_plan == Some(SafePlan::Waiting)
+                    && summary.safe_after_secs == self.safe_after;
                 self.dashboard = Some(summary);
+                if rebuild {
+                    self.modal = None;
+                    self.dash_clean_safe();
+                }
             }
             BackendEvent::Volumes(volumes) => self.volumes = volumes,
             BackendEvent::Alerts(alerts) => self.alerts = alerts,
@@ -835,6 +849,8 @@ impl<B: Backend> App<B> {
                 Some('l') => self.dash_open(),
                 Some('D' | 'b') => self.view = View::Browser,
                 Some('c') => self.dash_clean_safe(),
+                Some('i') => self.step_safe_after(false),
+                Some('I') => self.step_safe_after(true),
                 Some('p') => self.dash_plan(),
                 Some('x') => {
                     let count = self.marked.len();
@@ -937,10 +953,42 @@ impl<B: Backend> App<B> {
             .map(|s| s.reclaimable.safe_paths.clone())
             .unwrap_or_default();
         if paths.is_empty() {
-            self.info("nothing is safe to clean automatically", MessageLevel::Info);
+            self.safe_plan = None;
+            self.info(
+                format!(
+                    "nothing is safe to clean when idle {} (i to change)",
+                    safe_after_label(self.safe_after)
+                ),
+                MessageLevel::Info,
+            );
             return;
         }
         self.request_plan(paths, ActionOverride::RuleDefault);
+        self.safe_plan = Some(SafePlan::Open);
+    }
+
+    /// Steps the clean-safe idle window (`i` shorter, `I` longer) and refetches the
+    /// dashboard; an open clean-safe plan is rebuilt once it arrives.
+    fn step_safe_after(&mut self, longer: bool) {
+        let index = SAFE_AFTER_STEPS
+            .iter()
+            .position(|s| *s == self.safe_after)
+            .unwrap_or(0);
+        let next = if longer {
+            index.checked_sub(1).unwrap_or(SAFE_AFTER_STEPS.len() - 1)
+        } else {
+            (index + 1) % SAFE_AFTER_STEPS.len()
+        };
+        self.safe_after = SAFE_AFTER_STEPS[next];
+        self.backend.set_safe_after(self.safe_after);
+        self.backend.refresh_dashboard();
+        if self.safe_plan.is_some() {
+            self.safe_plan = Some(SafePlan::Waiting);
+        }
+        self.info(
+            format!("safe when idle {}", safe_after_label(self.safe_after)),
+            MessageLevel::Info,
+        );
     }
 
     /// Drills into the focused dashboard row: a kind or ecosystem opens the Reclaimable lens
@@ -1280,6 +1328,7 @@ impl<B: Backend> App<B> {
     }
 
     fn request_plan(&mut self, paths: Vec<PathBuf>, action: ActionOverride) {
+        self.safe_plan = None;
         self.request_plan_excluding(paths, action, BTreeSet::new());
     }
 
@@ -1439,6 +1488,17 @@ impl<B: Backend> App<B> {
                 self.start_execution(included(plan, &excluded), true);
                 return Handled::Redraw;
             }
+            (_, Some(ch @ ('i' | 'I'))) if self.safe_plan.is_some() => {
+                self.modal = Some(Modal::PlanPreview {
+                    plan,
+                    paths,
+                    action,
+                    cursor,
+                    excluded,
+                });
+                self.step_safe_after(ch == 'I');
+                return Handled::Redraw;
+            }
             (_, Some('a')) => {
                 let next = match action {
                     ActionOverride::RuleDefault => ActionOverride::Force(ActionSpec::Trash),
@@ -1506,6 +1566,7 @@ impl<B: Backend> App<B> {
     }
 
     fn after_modal_closed(&mut self) {
+        self.safe_plan = None;
         if let Some(tree) = self.pending_tree.take() {
             self.replace_tree(tree);
         }
@@ -1534,6 +1595,39 @@ impl<B: Backend> App<B> {
             self.backend.request_classifications(wanted);
         }
     }
+}
+
+/// Windows `i`/`I` step through for the clean-safe idle time, from the rules' own
+/// thresholds down to anything not in use right now.
+const SAFE_AFTER_STEPS: &[Option<u64>] = &[
+    None,
+    Some(7 * 86_400),
+    Some(86_400),
+    Some(12 * 3_600),
+    Some(6 * 3_600),
+    Some(3 * 3_600),
+    Some(3_600),
+    Some(15 * 60),
+    Some(0),
+];
+
+/// How a clean-safe idle window reads (`≥ 12h`, `per rule`).
+#[must_use]
+pub fn safe_after_label(secs: Option<u64>) -> String {
+    match secs {
+        None => "per rule".to_owned(),
+        Some(0) => "any time (not in use)".to_owned(),
+        Some(secs) => format!("≥ {}", crate::format::age(secs)),
+    }
+}
+
+/// State of the clean-safe plan (see [`App::safe_plan`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafePlan {
+    /// Its review is open.
+    Open,
+    /// Its window changed: rebuilt from the next dashboard computed with it.
+    Waiting,
 }
 
 /// `plan` without the `excluded` items.

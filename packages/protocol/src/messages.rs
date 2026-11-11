@@ -194,6 +194,10 @@ pub enum Request {
         /// Only include roots and volumes on the filesystems of `roots` (`-x`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         one_filesystem: bool,
+        /// Count items unused after this many idle seconds instead of their rules'
+        /// thresholds (build output: its project's idle time).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        safe_after_secs: Option<u64>,
     },
     /// Subscribe this connection to event topics.
     Subscribe {

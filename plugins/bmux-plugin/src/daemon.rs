@@ -115,6 +115,7 @@ pub async fn fetch(client: &mut Client) -> Result<Snapshot, ClientError> {
         .request(Request::Dashboard {
             roots: Vec::new(),
             one_filesystem: false,
+            safe_after_secs: None,
         })
         .await
     {

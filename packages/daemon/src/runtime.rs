@@ -99,6 +99,7 @@ async fn rescan_reply(
 /// # Errors
 ///
 /// * Any [`EngineError`] from the engine call
+#[allow(clippy::too_many_lines)] // one arm per request kind
 pub async fn handle(
     engine: &Engine,
     version: &str,
@@ -109,7 +110,13 @@ pub async fn handle(
         Request::Dashboard {
             roots,
             one_filesystem,
-        } => Response::Dashboard(Box::new(engine.dashboard(&roots, one_filesystem).await?)),
+            safe_after_secs,
+        } => {
+            let window = safe_after_secs.map(Duration::from_secs);
+            Response::Dashboard(Box::new(
+                engine.dashboard(&roots, one_filesystem, window).await?,
+            ))
+        }
         Request::Volumes => Response::Volumes {
             volumes: engine.volumes().await?,
         },

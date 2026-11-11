@@ -14,6 +14,10 @@ use crate::{EphemeralKind, VolumeStats};
 pub struct DashboardSummary {
     /// Unix seconds at which the summary was computed.
     pub generated_at: i64,
+    /// Idle time after which items counted as unused for this summary, when overridden
+    /// (`None`: each rule's own thresholds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_after_secs: Option<u64>,
     /// Monitored volumes, fullest first.
     pub volumes: Vec<VolumeSummary>,
     /// Indexed roots the summary covers.

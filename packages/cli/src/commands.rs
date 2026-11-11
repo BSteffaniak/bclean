@@ -683,6 +683,7 @@ pub async fn status(ctx: &Ctx, format: Format) -> anyhow::Result<()> {
         .request(Request::Dashboard {
             roots: Vec::new(),
             one_filesystem: false,
+            safe_after_secs: None,
         })
         .await?
     {

@@ -522,6 +522,15 @@ fn trend_row(volume: &VolumeSummary, cx: &mut PaintCx<'_, '_>, area: Rect) {
     );
 }
 
+/// The clean-safe idle window in a few columns (`per rule`, `≥ 12h`, `any idle`).
+fn safe_after_short(secs: Option<u64>) -> String {
+    match secs {
+        None => "per rule".to_owned(),
+        Some(0) => "any idle".to_owned(),
+        Some(secs) => format!("≥ {}", format::age(secs)),
+    }
+}
+
 fn reclaim_panel(summary: &DashboardSummary, cx: &mut PaintCx<'_, '_>, area: Rect) {
     let r = &summary.reclaimable;
     let inner = panel(cx, area, "Reclaimable", false);
@@ -548,6 +557,10 @@ fn reclaim_panel(summary: &DashboardSummary, cx: &mut PaintCx<'_, '_>, area: Rec
                 SAFE.add_modifier(Modifier::BOLD),
             ),
             Span::styled(if r.safe > 0 { "  c clean" } else { "" }, MUTED),
+            Span::styled(
+                format!("  {}", safe_after_short(summary.safe_after_secs)),
+                MUTED,
+            ),
         ]),
     );
     line_at(

@@ -796,18 +796,25 @@ fn render_modal<B: Backend>(app: &App<B>, modal: &Modal, cx: &mut PaintCx<'_, '_
             cursor,
             excluded,
             ..
-        } => render_plan_review(plan, action, *cursor, excluded, cx, full),
+        } => {
+            let window = app
+                .safe_plan
+                .map(|_| crate::app::safe_after_label(app.safe_after));
+            render_plan_review(plan, action, *cursor, excluded, window.as_deref(), cx, full);
+        }
         Modal::Execution(exec) => render_execution(exec, cx, full),
     }
 }
 
 /// The plan review: a summary, the item list (cursor, checkbox, size, action, path), the
 /// highlighted item's details in full, and the keys.
+#[allow(clippy::too_many_arguments)] // the review's state, plus where to paint it
 fn render_plan_review(
     plan: &CleanPlan,
     action: &ActionOverride,
     cursor: usize,
     excluded: &BTreeSet<PathBuf>,
+    safe_window: Option<&str>,
     cx: &mut PaintCx<'_, '_>,
     full: Rect,
 ) {
@@ -841,23 +848,32 @@ fn render_plan_review(
         return;
     }
     let width = usize::from(area.width);
-    write(
-        cx,
-        row(area, 0),
-        &Line::from_spans(vec![
-            Span::styled("action: ", MUTED),
+    let mut header = vec![
+        Span::styled("action: ", MUTED),
+        Span::styled(
+            match action {
+                ActionOverride::RuleDefault => "per-rule default".to_owned(),
+                ActionOverride::Force(spec) => format!("force {}", format::action(spec)),
+            },
+            Style::new()
+                .fg(Color::BrightYellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  (a to change)", MUTED),
+    ];
+    if let Some(window) = safe_window {
+        header.extend([
+            Span::styled("    safe when idle ", MUTED),
             Span::styled(
-                match action {
-                    ActionOverride::RuleDefault => "per-rule default".to_owned(),
-                    ActionOverride::Force(spec) => format!("force {}", format::action(spec)),
-                },
+                window.to_owned(),
                 Style::new()
                     .fg(Color::BrightYellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  (a to change)", MUTED),
-        ]),
-    );
+            Span::styled("  (i/I to change)", MUTED),
+        ]);
+    }
+    write(cx, row(area, 0), &Line::from_spans(header));
 
     // Rows: summary, blank, list, separator, details, keys.
     let details_height = (area.height / 3).clamp(5, 10);
@@ -1205,6 +1221,10 @@ fn help_lines() -> Vec<Line> {
                     "mark a candidate, or a project's reclaimable items",
                 ),
                 ("c", "clean everything safe (plan preview first)"),
+                (
+                    "i / I",
+                    "safe once idle shorter / longer (per rule, 7d … 15m, any time)",
+                ),
                 ("p", "plan for marked items (or the selected row)"),
                 ("v / w", "group by kind or ecosystem / growth 24h or 7d"),
                 ("b / esc", "back to the browser"),
@@ -1425,6 +1445,7 @@ fn render_hints<B: Backend>(app: &App<B>, cx: &mut PaintCx<'_, '_>, area: Rect) 
         KeyHint::new("enter", "open"),
         KeyHint::new("space", "mark"),
         KeyHint::new("c", "clean safe"),
+        KeyHint::new("i/I", "safe window"),
         KeyHint::new("p", "plan"),
         KeyHint::new("v", "kind/ecosystem"),
         KeyHint::new("w", "24h/7d"),

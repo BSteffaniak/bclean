@@ -208,6 +208,8 @@ pub struct LocalBackend {
     plans: Arc<Mutex<Plans>>,
     dashboard: Arc<tokio::sync::Notify>,
     one_filesystem: bool,
+    /// See [`Backend::set_safe_after`].
+    safe_after: Arc<Mutex<Option<u64>>>,
 }
 
 impl LocalBackend {
@@ -222,6 +224,7 @@ impl LocalBackend {
             plans: Arc::new(Mutex::new(Plans::default())),
             dashboard: Arc::new(tokio::sync::Notify::new()),
             one_filesystem: false,
+            safe_after: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -241,6 +244,7 @@ impl LocalBackend {
     fn spawn_dashboard(&self, sink: &EventSink) {
         let (engine, root) = (self.engine.clone(), Arc::clone(&self.root));
         let one_filesystem = self.one_filesystem;
+        let safe_after = Arc::clone(&self.safe_after);
         let fetch_sink = sink.clone();
         spawn_dashboard_refresher(
             &self.handle,
@@ -249,8 +253,9 @@ impl LocalBackend {
             move || {
                 let (engine, sink, root) =
                     (engine.clone(), fetch_sink.clone(), root.lock().clone());
+                let window = safe_after.lock().map(std::time::Duration::from_secs);
                 async move {
-                    match engine.dashboard(&[root], one_filesystem).await {
+                    match engine.dashboard(&[root], one_filesystem, window).await {
                         Ok(summary) => sink.send(BackendEvent::Dashboard(Box::new(summary))),
                         Err(e) => sink.send(BackendEvent::Error(format!("dashboard: {e}"))),
                     };
@@ -465,6 +470,10 @@ impl Backend for LocalBackend {
         }
     }
 
+    fn set_safe_after(&mut self, secs: Option<u64>) {
+        *self.safe_after.lock() = secs;
+    }
+
     fn refresh_dashboard(&mut self) {
         self.dashboard.notify_one();
         let engine = self.engine.clone();
@@ -517,6 +526,8 @@ struct DaemonShared {
     tree_root: Option<PathBuf>,
     /// Index remapping of the running execution (plan index -> UI index), if any.
     executing: Option<Vec<usize>>,
+    /// See [`Backend::set_safe_after`].
+    safe_after: Option<u64>,
 }
 
 /// Backend talking to the daemon.
@@ -581,7 +592,10 @@ impl DaemonBackend {
             sink.clone(),
             move || {
                 let (options, sink) = (options.clone(), fetch_sink.clone());
-                let path = shared.lock().path.clone();
+                let (path, safe_after_secs) = {
+                    let shared = shared.lock();
+                    (shared.path.clone(), shared.safe_after)
+                };
                 async move {
                     let summary = async {
                         let mut client = Client::connect(&options).await?;
@@ -589,6 +603,7 @@ impl DaemonBackend {
                             .request(Request::Dashboard {
                                 roots: vec![path],
                                 one_filesystem,
+                                safe_after_secs,
                             })
                             .await?
                         {
@@ -916,6 +931,10 @@ impl Backend for DaemonBackend {
             )));
             Ok(())
         });
+    }
+
+    fn set_safe_after(&mut self, secs: Option<u64>) {
+        self.shared.lock().safe_after = secs;
     }
 
     fn refresh_dashboard(&mut self) {

@@ -594,6 +594,37 @@ fn plan_review_moves_a_cursor_shows_details_and_leaves_items_out() {
     );
 }
 
+/// The clean-safe idle window steps with i/I, shows on the dashboard, and an open clean-safe
+/// plan is rebuilt from the dashboard computed with the new window.
+#[test]
+fn safe_window_steps_and_rebuilds_the_clean_safe_plan() {
+    let (mut app, mut rx) = dashboard_app();
+    let text = render_to_text(&mut app, 200, 50).join("\n");
+    assert!(text.contains("c clean  per rule"), "{text}");
+
+    press(&mut app, &mut rx, &[ch('c')]);
+    assert!(matches!(app.modal(), Some(Modal::PlanPreview { .. })));
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(text.contains("safe when idle per rule"), "{text}");
+
+    // Down to 7 days: the plan is rebuilt for it.
+    press(&mut app, &mut rx, &[ch('i')]);
+    assert_eq!(app.safe_after, Some(7 * 86_400));
+    assert!(
+        matches!(app.modal(), Some(Modal::PlanPreview { .. })),
+        "{:?}",
+        app.modal()
+    );
+    let text = render_to_text(&mut app, 120, 30).join("\n");
+    assert!(text.contains("safe when idle ≥ 7d"), "{text}");
+
+    // I steps back up, wrapping from the rules' thresholds to "any time".
+    press(&mut app, &mut rx, &[key(KeyCode::Escape), ch('I'), ch('I')]);
+    assert_eq!(app.safe_after, Some(0));
+    let text = render_to_text(&mut app, 200, 50).join("\n");
+    assert!(text.contains("c clean  any idle"), "{text}");
+}
+
 #[test]
 fn render_modals_and_dashboard() {
     let (mut app, mut rx) = setup(dashboard_backend());
@@ -631,6 +662,7 @@ fn sample_summary(volume: VolumeStats) -> DashboardSummary {
     };
     DashboardSummary {
         generated_at: 1_700_000_000,
+        safe_after_secs: None,
         volumes: vec![VolumeSummary {
             stats: volume,
             indexed: 600 << 30,
