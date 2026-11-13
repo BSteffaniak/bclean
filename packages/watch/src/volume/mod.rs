@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn temp_dir_volume_is_listed() {
+    fn temp_dir_volume_can_be_queried() {
         let dir = tempfile::tempdir().unwrap();
         let vol = volume_for(dir.path()).unwrap();
         assert!(vol.total > 0, "{vol:?}");
@@ -139,25 +139,27 @@ mod tests {
                 .unwrap()
                 .starts_with(&vol.mount_point)
         );
+    }
 
-        // tmpfs temp dirs (common on Linux) are hidden by the default filter.
-        let all = list_volumes_with(VolumeFilter {
-            include_tmpfs: true,
-            ..VolumeFilter::default()
-        })
-        .unwrap();
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn listed_volumes_are_sorted_and_queryable() {
+        // A temp directory can live on an intentionally excluded mount (for
+        // example macOS MNT_DONTBROWSE /nix, Linux tmpfs, or a remote mount).
+        // Listing policy must not be inferred from the location of TMPDIR.
+        let listed = list_volumes().unwrap();
         assert!(
-            all.iter().any(|v| v.mount_point == vol.mount_point),
-            "{} not in {:?}",
-            vol.mount_point,
-            all.iter().map(|v| &v.mount_point).collect::<Vec<_>>()
-        );
-        let default = list_volumes().unwrap();
-        assert_ne!(default.len(), 0);
-        assert!(
-            default
+            listed
                 .windows(2)
                 .all(|w| w[0].mount_point < w[1].mount_point)
         );
+        for volume in listed {
+            let queried = volume_for(Path::new(&volume.mount_point)).unwrap();
+            assert_eq!(queried.mount_point, volume.mount_point);
+            assert_eq!(queried.fs_type, volume.fs_type);
+            assert!(volume.total > 0);
+            assert!(volume.available <= volume.total);
+            assert!(volume.free <= volume.total);
+        }
     }
 }

@@ -155,6 +155,65 @@ fn c_str(buf: &[c_char]) -> String {
 mod tests {
     use super::*;
 
+    fn mount_stats(mount: &str, flags: i32) -> libc::statfs {
+        // SAFETY: statfs consists only of integer fields and fixed byte arrays.
+        let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+        stats.f_flags = flags.cast_unsigned();
+        stats.f_blocks = 100;
+        stats.f_bsize = 4096;
+        for (target, byte) in stats.f_mntonname.iter_mut().zip(mount.bytes()) {
+            *target = byte.cast_signed();
+        }
+        for (target, byte) in stats.f_fstypename.iter_mut().zip(b"apfs") {
+            *target = byte.cast_signed();
+        }
+        stats
+    }
+
+    #[test]
+    fn hidden_apfs_mount_is_queryable_but_not_listed() {
+        let stats = mount_stats("/nix", libc::MNT_LOCAL | libc::MNT_DONTBROWSE);
+        // Path queries convert the OS result without applying listing policy.
+        let volume = convert(&stats, 0);
+        assert_eq!(volume.mount_point, "/nix");
+        assert!(volume.total > 0);
+        assert!(!keep(&stats, VolumeFilter::default()));
+        assert!(!keep(
+            &stats,
+            VolumeFilter {
+                include_tmpfs: true,
+                include_remote: true,
+                include_read_only: true,
+                include_empty: true,
+            }
+        ));
+    }
+
+    #[test]
+    fn hidden_data_volume_remains_listed() {
+        let stats = mount_stats(DATA_VOLUME, libc::MNT_LOCAL | libc::MNT_DONTBROWSE);
+        assert!(keep(&stats, VolumeFilter::default()));
+    }
+
+    #[test]
+    fn ordinary_writable_apfs_volume_is_listed() {
+        let stats = mount_stats("/Volumes/External", libc::MNT_LOCAL);
+        assert!(keep(&stats, VolumeFilter::default()));
+    }
+
+    #[test]
+    fn read_only_apfs_volume_requires_opt_in() {
+        let stats = mount_stats("/", libc::MNT_LOCAL | libc::MNT_RDONLY);
+        assert!(!keep(&stats, VolumeFilter::default()));
+        assert!(keep(
+            &stats,
+            VolumeFilter {
+                include_read_only: true,
+                ..VolumeFilter::default()
+            }
+        ));
+    }
+
     #[test]
     fn data_volume_reports_its_own_usage() {
         let Ok(stats) = volume_for(Path::new("/System/Volumes/Data")) else {
