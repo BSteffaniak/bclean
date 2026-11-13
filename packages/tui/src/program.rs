@@ -3,10 +3,10 @@
 use std::io::{Stdout, stdout};
 use std::time::Duration;
 
-use bmux_tui::crossterm::{CrosstermTerminalGuard, terminal_size};
 use bmux_tui::geometry::Rect;
 use bmux_tui::paint::PaintCx;
 use bmux_tui::terminal::Terminal;
+use bmux_tui::terminal_io::{TerminalGuard, terminal_size};
 use bmux_tui_runtime::{
     MessageKey, Program, Runtime, RuntimeConfig, RuntimeError, RuntimeEvent, TerminalInput,
     TerminalPresenter, Update,
@@ -101,7 +101,7 @@ pub fn run<B: Backend>(backend: B, options: TuiOptions) -> Result<TuiExit, TuiEr
 }
 
 async fn run_async<B: Backend>(backend: B, options: TuiOptions) -> Result<TuiExit, TuiError> {
-    let mut guard = CrosstermTerminalGuard::enter(stdout())?;
+    let mut guard = TerminalGuard::enter(stdout())?;
     let result = run_in_terminal(&mut guard, backend, options).await;
     let restoration = guard.leave().map(|_: Stdout| ());
     match (result, restoration) {
@@ -112,7 +112,7 @@ async fn run_async<B: Backend>(backend: B, options: TuiOptions) -> Result<TuiExi
 }
 
 async fn run_in_terminal<B: Backend>(
-    guard: &mut CrosstermTerminalGuard<Stdout>,
+    guard: &mut TerminalGuard<Stdout>,
     backend: B,
     options: TuiOptions,
 ) -> Result<TuiExit, TuiError> {

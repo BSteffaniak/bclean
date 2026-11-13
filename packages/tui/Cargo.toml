@@ -17,7 +17,7 @@ name = "demo"
 bclean_model = { workspace = true }
 bclean_tree = { workspace = true }
 bmux_keyboard = { workspace = true }
-bmux_tui = { workspace = true, features = ["crossterm"] }
+bmux_tui = { workspace = true, features = ["terminal-io"] }
 bmux_tui_components = { workspace = true, features = [
     "breadcrumbs",
     "key-hint-bar",
@@ -30,7 +30,7 @@ bmux_tui_components = { workspace = true, features = [
     "tab-bar",
     "uniform-list",
 ] }
-bmux_tui_runtime = { workspace = true, features = ["crossterm"] }
+bmux_tui_runtime = { workspace = true, features = ["terminal-io"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
