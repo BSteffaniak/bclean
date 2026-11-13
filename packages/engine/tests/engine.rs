@@ -132,8 +132,12 @@ select = { ephemeral = true, stale = false, auto_only = false, min_size = "1B" }
 "#;
     let (_dir, root, engine) = setup(config).await;
     engine.scan(&root).await.unwrap();
-    let volumes = engine.sample_volumes().await.unwrap();
+    let mut volumes = engine.sample_volumes().await.unwrap();
     assert!(!volumes.is_empty());
+    // Exercise multiple-volume alert keys even on single-volume CI hosts.
+    let mut extra_volume = volumes[0].clone();
+    extra_volume.mount_point = root.join("other-volume").to_string_lossy().into_owned();
+    volumes.push(extra_volume);
     let outcomes = engine.evaluate_policies(&volumes).await.unwrap();
     assert!(!outcomes.is_empty());
     // One firing per volume; candidates are restricted to the firing's volume.
@@ -146,9 +150,22 @@ select = { ephemeral = true, stale = false, auto_only = false, min_size = "1B" }
     assert!(!plan.items.is_empty());
     assert!(outcome.report.as_ref().unwrap().dry_run);
     assert!(root.join("app/target").exists(), "shadow never acts");
-    assert!(!engine.alerts().is_empty());
-    let key = engine.alerts()[0].key.clone();
-    assert!(engine.ack_alert(&key) > 0);
+    let alerts = engine.alerts();
+    let keys: std::collections::BTreeSet<_> = alerts.iter().map(|a| a.key.clone()).collect();
+    assert!(
+        keys.len() >= 2,
+        "expected distinct alerts for multiple volumes: {alerts:?}"
+    );
+    let key = &alerts[0].key;
+    let acknowledged = alerts.iter().filter(|a| &a.key == key).count();
+    assert_eq!(engine.ack_alert(key), acknowledged);
+    let remaining = engine.alerts();
+    assert_eq!(remaining.len(), alerts.len() - acknowledged);
+    assert!(remaining.iter().all(|a| &a.key != key));
+    assert_eq!(engine.ack_alert(key), 0, "acknowledgement is idempotent");
+    for key in keys.iter().filter(|other| *other != key) {
+        assert!(engine.ack_alert(key) > 0);
+    }
     assert!(engine.alerts().is_empty());
     assert_eq!(engine.status("t").policies, 1);
 }
