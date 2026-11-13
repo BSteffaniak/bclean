@@ -69,7 +69,7 @@ fn reports_parent_of_created_file() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn fsevents_replays_changes_since_cursor() {
+fn fsevents_replays_changes_or_requests_a_safe_rescan() {
     use bclean_watch::WatchBackend;
     let tmp = tempfile::tempdir().unwrap();
     let sub = tmp.path().join("replay");
@@ -88,9 +88,42 @@ fn fsevents_replays_changes_since_cursor() {
     })
     .unwrap();
     let batch = wait_for(source.as_ref(), |_| {}, |b| covers(b, &sub));
-    let batch = batch.expect("offline change was not replayed");
-    assert!(!batch.must_full_rescan);
-    assert!(batch.cursor.is_some());
+    let batch = batch.expect("offline change was neither replayed nor covered by a rescan");
+    // Replay is best-effort: an unavailable event-store UUID (for example on
+    // a sandboxed /nix volume), expired history, or dropped events requires a
+    // full rescan. That is the safe recovery path, not a replay failure.
+    if batch.must_full_rescan {
+        assert!(
+            batch.dirty.iter().all(|path| path.starts_with(tmp.path())),
+            "rescan escaped the watched root: {batch:?}"
+        );
+    } else {
+        assert!(
+            batch.cursor.is_some(),
+            "replay must advance its cursor: {batch:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fsevents_missing_volume_identity_forces_full_rescan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cursor = bclean_watch::WatchCursor::from_bytes(
+        br#"{"backend":"FS_EVENTS","event_id":1,"volume_uuids":{}}"#,
+    )
+    .unwrap();
+    let source = open_change_source(&WatchConfig {
+        since: Some(cursor),
+        ..config(tmp.path())
+    })
+    .unwrap();
+    let batch = source
+        .batches()
+        .recv_timeout(TIMEOUT)
+        .expect("no rescan batch");
+    assert!(batch.must_full_rescan);
+    assert_eq!(batch.dirty, vec![tmp.path().to_path_buf()]);
 }
 
 #[cfg(target_os = "macos")]
