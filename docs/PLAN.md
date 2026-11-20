@@ -84,6 +84,9 @@ alarms, and can auto-clean).
   subdirectories. Unchanged subtrees are never read, so a dotfile saved in `~` costs one
   directory listing, not a rescan of the home directory. Subtree rescans happen only when the
   event history is incomplete (dropped events, FSEvents `MustScanSubDirs`, root moved).
+- A change inside nested roots (`~` inside `/`) is applied to every loaded root whose tree
+  covers it, deepest first, so browsing the outer root is as current as browsing the inner
+  one. Outer roots skip paths on another filesystem or excluded from their scan.
 - Those rescans are budgeted per root (`monitor.rescan_budget_percent`, default 5% of wall
   time): after a rescan taking `T`, the next waits `T × 19`, and requests arriving meanwhile
   are merged. Under heavy filesystem load FSEvents can lose history for a whole root every few

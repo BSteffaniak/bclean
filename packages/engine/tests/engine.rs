@@ -577,6 +577,45 @@ async fn expand_updates_every_root_containing_the_path() {
     assert!(expanded(&root), "the outer root was not updated");
 }
 
+/// Changes inside nested roots (`~` inside `/`) reach every root holding them, so a client
+/// browsing the outer root never sees (and offers to delete) entries that are gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_update_every_root_containing_them() {
+    let (_dir, root, engine) = setup("").await;
+    let inner = root.join("app");
+    engine.scan(&root).await.unwrap();
+    engine.scan(&inner).await.unwrap();
+    let has = |r: &Path, p: &Path| engine.tree(r).unwrap().find(p).is_some();
+    let generation = |r: &Path| engine.snapshot_ref(r).unwrap().generation;
+    let outer_before = generation(&root);
+
+    // A new build output appears inside the inner root.
+    write(&inner.join("cache/blob"), 5_000);
+    engine.apply_dirty(vec![inner.clone()]).await.unwrap();
+    let blob = inner.join("cache/blob");
+    assert!(has(&inner, &blob));
+    assert!(has(&root, &blob), "the outer root missed a new entry");
+    assert!(generation(&root) > outer_before);
+
+    // A directory is deleted (as after a clean): both trees and classifications drop it.
+    let target = inner.join("target");
+    assert!(has(&root, &target) && has(&inner, &target));
+    std::fs::remove_dir_all(&target).unwrap();
+    engine.apply_dirty(vec![inner.clone()]).await.unwrap();
+    assert!(!has(&inner, &target));
+    assert!(
+        !has(&root, &target),
+        "the outer root still lists a deleted entry"
+    );
+    assert!(
+        engine
+            .classifications_under(&root)
+            .iter()
+            .all(|c| !c.path.starts_with(&target)),
+        "a deleted entry is still classified"
+    );
+}
+
 /// The dashboard summarizes reclaimable data by kind, category, and project, counting nested
 /// classifications once.
 #[tokio::test(flavor = "multi_thread")]

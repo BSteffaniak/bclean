@@ -1140,18 +1140,58 @@ impl Engine {
         Ok(())
     }
 
-    /// Groups `dirs` by loaded root, dropping paths outside every root and bclean's own paths.
-    fn group_by_root(&self, dirs: Vec<PathBuf>) -> BTreeMap<PathBuf, Vec<PathBuf>> {
+    /// Groups `dirs` by the loaded roots holding them, deepest root first, dropping paths
+    /// outside every root and bclean's own paths.
+    ///
+    /// A path inside nested roots (`~` inside `/`) belongs to each of them: the deepest one
+    /// always, and every outer one whose tree covers it (see [`Self::tree_covers`]). Routing
+    /// only to the deepest root left a client browsing `/` with a tree that never learned of
+    /// changes under `~`, down to offering to delete directories that were long gone.
+    fn group_by_root(&self, dirs: Vec<PathBuf>) -> Vec<(PathBuf, Vec<PathBuf>)> {
+        let mut roots: Vec<(PathBuf, Option<Arc<Tree>>)> = self
+            .slots()
+            .into_iter()
+            .map(|slot| {
+                let tree = slot.state.read().tree.clone();
+                (slot.root.clone(), tree)
+            })
+            .collect();
+        roots.sort_by_key(|(root, _)| std::cmp::Reverse(root.components().count()));
         let mut by_root: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
         for dir in dirs {
             if self.is_own_path(&dir) {
                 continue;
             }
-            if let Some(root) = self.root_for(&dir) {
-                by_root.entry(root).or_default().push(dir);
+            let mut holding = roots.iter().filter(|(root, _)| dir.starts_with(root));
+            let Some((deepest, _)) = holding.next() else {
+                continue;
+            };
+            by_root
+                .entry(deepest.clone())
+                .or_default()
+                .push(dir.clone());
+            for (root, tree) in holding {
+                if tree.as_deref().is_some_and(|t| Self::tree_covers(t, &dir)) {
+                    by_root.entry(root.clone()).or_default().push(dir.clone());
+                }
             }
         }
-        by_root
+        let mut grouped: Vec<(PathBuf, Vec<PathBuf>)> = by_root.into_iter().collect();
+        grouped.sort_by_key(|(root, _)| std::cmp::Reverse(root.components().count()));
+        grouped
+    }
+
+    /// Whether `tree`'s scan entered `path`: no node on the way to it is on another
+    /// filesystem or excluded. Such nodes are leaves, so refreshing `path` there would
+    /// either do nothing or scan where the root's own scan never went.
+    fn tree_covers(tree: &Tree, path: &Path) -> bool {
+        let Some((node, _rest)) = tree.find_nearest(path) else {
+            return false;
+        };
+        !std::iter::once(node).chain(tree.ancestors(node)).any(|n| {
+            tree.flags(n)
+                .intersects(NodeFlags::EXCLUDED.union(NodeFlags::OTHER_FS))
+        })
     }
 
     /// Queues complete rescans of subtrees whose change history is incomplete, and runs them
@@ -1262,7 +1302,7 @@ impl Engine {
     /// * Same as [`Engine::apply_dirty`]
     pub async fn apply_batch(&self, batch: ChangeBatch) -> Result<()> {
         if batch.must_full_rescan {
-            for root in self.group_by_root(batch.dirty.clone()).into_keys() {
+            for (root, _) in self.group_by_root(batch.dirty.clone()) {
                 let slot = self.slot(&root);
                 let mut state = slot.state.write();
                 if !state.rescan_owed {
