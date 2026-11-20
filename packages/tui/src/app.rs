@@ -219,7 +219,7 @@ pub struct App<B: Backend> {
     pub(crate) options: TuiOptions,
     pub(crate) tree: Option<Arc<Tree>>,
     pub(crate) tree_gen: u64,
-    pub(crate) pending_tree: Option<Arc<Tree>>,
+    pub(crate) pending_tree: Option<(Arc<Tree>, Option<ClassStore>)>,
     pub(crate) progress: Option<ScanProgress>,
     pub(crate) classes: ClassStore,
     pub(crate) cache: ListingCache,
@@ -444,13 +444,8 @@ impl<B: Backend> App<B> {
     /// Applies one backend event.
     pub fn apply(&mut self, event: BackendEvent) {
         match event {
-            BackendEvent::Tree(tree) => {
-                if self.defer_tree_updates() {
-                    self.pending_tree = Some(tree);
-                } else {
-                    self.replace_tree(tree);
-                }
-            }
+            BackendEvent::Tree(tree) => self.receive_tree(tree, None),
+            BackendEvent::Reloaded { tree, classes } => self.receive_tree(tree, Some(classes)),
             BackendEvent::Progress(progress) => {
                 if !progress.running {
                     self.expanding.clear();
@@ -460,10 +455,6 @@ impl<B: Backend> App<B> {
             BackendEvent::Expanded { path, subtree } => self.apply_expanded(&path, &subtree),
             BackendEvent::Classifications(items) => {
                 self.classes.insert(self.tree.as_deref(), items);
-            }
-            BackendEvent::ReplaceClassifications(items) => {
-                self.classes.replace(self.tree.as_deref(), items);
-                self.requested.clear();
             }
             BackendEvent::Plan(plan) => self.apply_plan(plan),
             BackendEvent::Execution(event) => self.apply_execution(event),
@@ -498,7 +489,23 @@ impl<B: Backend> App<B> {
         )
     }
 
-    fn replace_tree(&mut self, tree: Arc<Tree>) {
+    /// Applies a new tree (with its classifications, already indexed against it), or keeps
+    /// it for later while a plan or execution is shown.
+    fn receive_tree(&mut self, tree: Arc<Tree>, classes: Option<ClassStore>) {
+        if !self.defer_tree_updates() {
+            self.replace_tree(tree, classes);
+            return;
+        }
+        // Classifications held back with an older tree are indexed against this one.
+        let classes = classes.or_else(|| {
+            let (_, mut held) = self.pending_tree.take()?;
+            held.as_mut()?.reindex(&tree);
+            held
+        });
+        self.pending_tree = Some((tree, classes));
+    }
+
+    fn replace_tree(&mut self, tree: Arc<Tree>, classes: Option<ClassStore>) {
         let (cwd_path, selected_path) = match self.pending_position.take() {
             Some(pending) if pending.root == tree.root_path() => {
                 if self
@@ -519,7 +526,16 @@ impl<B: Backend> App<B> {
         };
         let current = Arc::clone(&tree);
         self.tree = Some(tree);
-        self.on_tree_changed(cwd_path, selected_path);
+        let indexed = classes.is_some();
+        if let Some(classes) = classes {
+            let previous = self.classes.adopt(classes);
+            // Freeing `/`'s classifications takes ~25ms: not on the UI thread.
+            if !previous.is_empty() {
+                std::thread::spawn(move || drop(previous));
+            }
+            self.requested.clear();
+        }
+        self.on_tree_changed(cwd_path, selected_path, indexed);
         let tree = current;
         if let Some(path) = self.initial_path.take()
             && let Some((id, _)) = tree.find_nearest(&path)
@@ -581,13 +597,22 @@ impl<B: Backend> App<B> {
         (cwd, selected)
     }
 
-    fn on_tree_changed(&mut self, cwd_path: Option<PathBuf>, selected_path: Option<PathBuf>) {
+    /// Re-establishes the position after the tree changed, re-indexing the classifications
+    /// against it unless they came `indexed` with it.
+    fn on_tree_changed(
+        &mut self,
+        cwd_path: Option<PathBuf>,
+        selected_path: Option<PathBuf>,
+        indexed: bool,
+    ) {
         self.tree_gen += 1;
         self.cache.clear();
         let Some(tree) = self.tree.clone() else {
             return;
         };
-        self.classes.reindex(&tree);
+        if !indexed {
+            self.classes.reindex(&tree);
+        }
         self.cwd = cwd_path
             .and_then(|p| tree.find_nearest(&p))
             .map_or(NodeId::ROOT, |(id, _)| id);
@@ -625,7 +650,7 @@ impl<B: Backend> App<B> {
                 return;
             }
         }
-        self.on_tree_changed(cwd_path, selected_path);
+        self.on_tree_changed(cwd_path, selected_path, false);
         if self.enter_after_expand.as_deref() == Some(path) {
             self.enter_after_expand = None;
             if let Some(id) = self.tree.as_deref().and_then(|t| t.find(path)) {
@@ -718,7 +743,7 @@ impl<B: Backend> App<B> {
             return;
         }
         Arc::make_mut(tree_arc).remove_subtree(id);
-        self.on_tree_changed(cwd_path, selected_path);
+        self.on_tree_changed(cwd_path, selected_path, false);
     }
 
     // ----- input ------------------------------------------------------------------------------
@@ -1567,8 +1592,8 @@ impl<B: Backend> App<B> {
 
     fn after_modal_closed(&mut self) {
         self.safe_plan = None;
-        if let Some(tree) = self.pending_tree.take() {
-            self.replace_tree(tree);
+        if let Some((tree, classes)) = self.pending_tree.take() {
+            self.replace_tree(tree, classes);
         }
         if self.message.as_ref().map(|m| m.1) == Some(MessageLevel::Info) {
             self.message = None;

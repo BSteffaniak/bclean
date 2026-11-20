@@ -94,7 +94,11 @@ alarms, and can auto-clean).
   dashboard waits up to a second for it to come back.
 - Clients reload the browsed tree on `TREE_UPDATED`, latest snapshot only, pausing three times
   as long as the last reload took; the daemon likewise spaces each root's snapshot saves for
-  clients by three times the last save's duration.
+  clients by three times the last save's duration. Clients index the classifications against
+  the new tree on a worker thread and hand the UI both at once, so a reload of `/` (tens of
+  thousands of classifications) costs the UI thread nothing. Resolving many paths indexes the
+  children of wide directories (`/nix/store`) by name once (`PathFinder`) instead of scanning
+  them per lookup.
 - Those rescans are budgeted per root (`monitor.rescan_budget_percent`, default 5% of wall
   time): after a rescan taking `T`, the next waits `T × 19`, and requests arriving meanwhile
   are merged. Under heavy filesystem load FSEvents can lose history for a whole root every few

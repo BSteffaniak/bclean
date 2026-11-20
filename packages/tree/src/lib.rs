@@ -15,6 +15,7 @@
 //! attach them with [`Tree::graft`], or stream batches into a single builder thread.
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
@@ -1080,6 +1081,68 @@ impl Iterator for Descendants<'_> {
     }
 }
 
+/// Directories with more children than this get a name index in a [`PathFinder`].
+const WIDE_DIR: usize = 32;
+
+/// Resolves many paths against one tree.
+///
+/// [`Tree::find`] scans a directory's children for every component, so resolving thousands
+/// of paths inside a directory with a hundred thousand entries (`/nix/store`) cost seconds.
+/// A finder indexes each wide directory's children by name the first time a lookup passes
+/// through it.
+pub struct PathFinder<'a> {
+    tree: &'a Tree,
+    /// Name index per directory looked into; `None` for narrow ones (scanned directly).
+    dirs: BTreeMap<NodeId, Option<BTreeMap<&'a [u8], NodeId>>>,
+}
+
+impl<'a> PathFinder<'a> {
+    /// A finder over `tree`.
+    #[must_use]
+    pub const fn new(tree: &'a Tree) -> Self {
+        Self {
+            tree,
+            dirs: BTreeMap::new(),
+        }
+    }
+
+    /// Like [`Tree::find`].
+    pub fn find(&mut self, path: &Path) -> Option<NodeId> {
+        let tree = self.tree;
+        let rel = if path.is_absolute() {
+            path.strip_prefix(&tree.root_path).ok()?
+        } else {
+            path
+        };
+        let mut cur = NodeId::ROOT;
+        for component in rel.components() {
+            match component {
+                Component::Normal(name) => cur = self.child(cur, name)?,
+                Component::CurDir => {}
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    fn child(&mut self, parent: NodeId, name: &OsStr) -> Option<NodeId> {
+        let tree = self.tree;
+        let index = self.dirs.entry(parent).or_insert_with(|| {
+            (tree.children(parent).nth(WIDE_DIR).is_some()).then(|| {
+                let mut index = BTreeMap::new();
+                for child in tree.children(parent) {
+                    index.entry(tree.name_raw(child)).or_insert(child);
+                }
+                index
+            })
+        });
+        index.as_ref().map_or_else(
+            || tree.child_by_name(parent, name),
+            |index| index.get(name_bytes(name).as_ref()).copied(),
+        )
+    }
+}
+
 fn apply_delta(value: u64, delta: i128) -> u64 {
     let next = i128::from(value) + delta;
     u64::try_from(next.max(0)).unwrap_or(u64::MAX)
@@ -1126,6 +1189,37 @@ mod tests {
         let f2 = tree.add_child_raw(NodeId::ROOT, OsStr::new("f2"), file(50, 20));
         tree.recompute_aggregates();
         (tree, a, f1, f2)
+    }
+
+    #[test]
+    fn path_finder_matches_find_in_wide_and_narrow_directories() {
+        let mut tree = Tree::new("/root", EntryMeta::dir());
+        let wide = tree.add_child_raw(NodeId::ROOT, OsStr::new("wide"), EntryMeta::dir());
+        for i in 0..100 {
+            let dir = tree.add_child_raw(wide, OsStr::new(&format!("d{i}")), EntryMeta::dir());
+            tree.add_child_raw(dir, OsStr::new("f"), file(1, 1));
+        }
+        tree.recompute_aggregates();
+        let mut finder = PathFinder::new(&tree);
+        for path in [
+            "/root/wide/d7/f",
+            "/root/wide/d99",
+            "/root/wide",
+            "/root",
+            "wide/d3/f",
+        ] {
+            let path = Path::new(path);
+            assert_eq!(finder.find(path), tree.find(path), "{}", path.display());
+            assert!(finder.find(path).is_some());
+        }
+        for path in [
+            "/root/wide/d100",
+            "/root/wide/d7/g",
+            "/other/wide",
+            "/root/nope/f",
+        ] {
+            assert_eq!(finder.find(Path::new(path)), None, "{path}");
+        }
     }
 
     #[test]

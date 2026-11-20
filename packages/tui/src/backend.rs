@@ -17,6 +17,8 @@ use std::time::Duration;
 use bclean_model::{ActionSpec, AlertEvent, Classification, VolumeStats};
 use bclean_tree::Tree;
 
+use crate::listing::ClassStore;
+
 /// Source of scan data, classifications, and cleaning for the TUI.
 ///
 /// Implementations must be non-blocking; see the module docs.
@@ -174,9 +176,16 @@ pub enum BackendEvent {
     },
     /// Classifications keyed by absolute path. May arrive at any time, in any number of batches.
     Classifications(Vec<(PathBuf, Classification)>),
-    /// Replaces all known classifications at once (after a reload), so no frame is drawn
-    /// between dropping the old set and receiving the new one.
-    ReplaceClassifications(Vec<(PathBuf, Classification)>),
+    /// A tree with every classification under it, already indexed against it
+    /// ([`ClassStore::build`]). Replaces the current tree like [`BackendEvent::Tree`] and all
+    /// known classifications, in one step: indexing tens of thousands of classifications on
+    /// the UI thread for every reload of `/` made input lag behind.
+    Reloaded {
+        /// The new tree.
+        tree: Arc<Tree>,
+        /// Its classifications.
+        classes: ClassStore,
+    },
     /// Answer to [`Backend::build_plan`].
     Plan(CleanPlan),
     /// Plan execution progress.

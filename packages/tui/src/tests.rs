@@ -8,6 +8,7 @@ use bclean_model::{ActionSpec, AlertEvent, DashboardSummary, Severity, VolumeSta
 use bclean_tree::{EntryKind, EntryMeta, NodeFlags, NodeId, Tree};
 use bmux_keyboard::{KeyCode, KeyStroke, Modifiers};
 
+use crate::listing::ClassStore;
 use crate::listing::tests::{class, file, sample_tree};
 use crate::{
     ActionOverride, App, BackendEvent, EventReceiver, EventSink, ExecutionEvent, Handled,
@@ -439,6 +440,59 @@ fn new_trees_keep_position_and_defer_during_modals() {
     assert_eq!(app.listing().len(), 3, "deferred while the plan is open");
     press(&mut app, &mut rx, &[key(KeyCode::Escape)]);
     assert_eq!(app.listing().len(), 2, "applied when it closes");
+}
+
+#[test]
+fn reloads_replace_tree_and_classifications_together() {
+    let (mut app, mut rx) = setup(backend());
+    pump(&mut app, &mut rx);
+    let old = app.tree().unwrap().find(Path::new("/r/c/target")).unwrap();
+    assert!(app.classification(old).is_some());
+
+    let mut fresh = sample_tree();
+    fresh.add_child(NodeId::ROOT, OsStr::new("d"), file(5, 1));
+    let classes = ClassStore::build(
+        &fresh,
+        vec![(PathBuf::from("/r/d"), class(true, true, 1.0, 5))],
+    );
+    app.apply(BackendEvent::Reloaded {
+        tree: Arc::new(fresh),
+        classes,
+    });
+    let tree = app.tree().unwrap().clone();
+    let d = tree.find(Path::new("/r/d")).unwrap();
+    assert!(
+        app.classification(d).is_some(),
+        "indexed against the new tree"
+    );
+    let target = tree.find(Path::new("/r/c/target")).unwrap();
+    assert!(
+        app.classification(target).is_none(),
+        "old classifications replaced"
+    );
+
+    // Held back while a plan is open; a plain tree arriving meanwhile keeps them.
+    press(&mut app, &mut rx, &[ch('p')]);
+    assert!(matches!(app.modal(), Some(Modal::PlanPreview { .. })));
+    let mut held = sample_tree();
+    held.add_child(NodeId::ROOT, OsStr::new("e"), file(7, 1));
+    let classes = ClassStore::build(
+        &held,
+        vec![(PathBuf::from("/r/e"), class(true, true, 1.0, 7))],
+    );
+    app.apply(BackendEvent::Reloaded {
+        tree: Arc::new(held.clone()),
+        classes,
+    });
+    let mut newer = held;
+    newer.add_child(NodeId::ROOT, OsStr::new("f"), file(1, 1));
+    app.apply(BackendEvent::Tree(Arc::new(newer)));
+    assert!(app.tree().unwrap().find(Path::new("/r/e")).is_none());
+    press(&mut app, &mut rx, &[key(KeyCode::Escape)]);
+    let tree = app.tree().unwrap().clone();
+    assert!(tree.find(Path::new("/r/f")).is_some());
+    let e = tree.find(Path::new("/r/e")).unwrap();
+    assert!(app.classification(e).is_some());
 }
 
 #[test]

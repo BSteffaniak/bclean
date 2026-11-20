@@ -45,12 +45,12 @@ fn local_backend_renders_tree_and_classifications() {
     while !(tree && classes) && Instant::now() < deadline {
         match rx.try_recv() {
             Some(event) => {
-                tree |= matches!(event, BackendEvent::Tree(_));
-                classes |= matches!(
-                    &event,
-                    BackendEvent::Classifications(c) | BackendEvent::ReplaceClassifications(c)
-                        if !c.is_empty()
-                );
+                tree |= matches!(event, BackendEvent::Tree(_) | BackendEvent::Reloaded { .. });
+                classes |= match &event {
+                    BackendEvent::Classifications(c) => !c.is_empty(),
+                    BackendEvent::Reloaded { classes, .. } => !classes.is_empty(),
+                    _ => false,
+                };
                 app.apply(event);
             }
             None => std::thread::sleep(Duration::from_millis(10)),

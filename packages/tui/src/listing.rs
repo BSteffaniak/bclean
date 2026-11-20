@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bclean_model::{Classification, EphemeralKind};
-use bclean_tree::{NodeId, SizeMode, SortKey, Tree};
+use bclean_tree::{NodeId, PathFinder, SizeMode, SortKey, Tree};
 
 /// Column the listing is sorted by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -161,7 +161,7 @@ pub fn is_reclaimable(class: &Classification) -> bool {
 }
 
 /// Classifications keyed by absolute path, with a node index for the current tree.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ClassStore {
     by_path: BTreeMap<PathBuf, Arc<Classification>>,
     by_node: BTreeMap<NodeId, Arc<Classification>>,
@@ -214,9 +214,10 @@ impl ClassStore {
 
     /// Adds or replaces classifications and indexes them against `tree`.
     pub fn insert(&mut self, tree: Option<&Tree>, items: Vec<(PathBuf, Classification)>) {
+        let mut finder = tree.map(PathFinder::new);
         for (path, class) in items {
             let class = Arc::new(class);
-            if let Some(id) = tree.and_then(|t| t.find(&path)) {
+            if let Some(id) = finder.as_mut().and_then(|f| f.find(&path)) {
                 self.by_node.insert(id, Arc::clone(&class));
             }
             self.by_path.insert(path, class);
@@ -227,19 +228,33 @@ impl ClassStore {
         self.generation += 1;
     }
 
-    /// Replaces every classification with `items` in one step.
-    pub fn replace(&mut self, tree: Option<&Tree>, items: Vec<(PathBuf, Classification)>) {
-        self.by_path.clear();
-        self.by_node.clear();
-        self.reclaimable_inside.clear();
-        self.insert(tree, items);
+    /// A store holding `items`, indexed against `tree`.
+    ///
+    /// Indexing every classification of `/` takes tens of milliseconds, so backends build the
+    /// store on their own threads and send it with the tree ([`crate::BackendEvent::Reloaded`]).
+    #[must_use]
+    pub fn build(tree: &Tree, items: Vec<(PathBuf, Classification)>) -> Self {
+        let mut store = Self::default();
+        store.insert(Some(tree), items);
+        store
+    }
+
+    /// Takes over `next`, bumping the generation past the current one so listings keyed on it
+    /// are rebuilt. Returns the previous store.
+    #[must_use = "dropping tens of thousands of classifications takes a while; callers on the UI thread drop it elsewhere"]
+    pub fn adopt(&mut self, next: Self) -> Self {
+        let generation = self.generation.max(next.generation) + 1;
+        let previous = std::mem::replace(self, next);
+        self.generation = generation;
+        previous
     }
 
     /// Re-resolves every path against a new (or mutated) tree.
     pub fn reindex(&mut self, tree: &Tree) {
         self.by_node.clear();
+        let mut finder = PathFinder::new(tree);
         for (path, class) in &self.by_path {
-            if let Some(id) = tree.find(path) {
+            if let Some(id) = finder.find(path) {
                 self.by_node.insert(id, Arc::clone(class));
             }
         }

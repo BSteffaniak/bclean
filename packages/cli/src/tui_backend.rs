@@ -12,6 +12,7 @@ use bclean_client::{Client, ClientOptions};
 use bclean_engine::{ActionProgress, Engine, Settings};
 use bclean_protocol::{Event, Request, Response, SnapshotRef, Topic};
 use bclean_tree::{NodeId, Tree};
+use bclean_tui::listing::ClassStore;
 use bclean_tui::{
     ActionOverride, Backend, BackendEvent, BackendMode, BackendStatus, CleanPlan, CleanReport,
     EventSink, ExecutionEvent, PlanRequest, ScanProgress,
@@ -241,13 +242,13 @@ impl LocalBackend {
 
 fn send_tree(engine: &Engine, sink: &EventSink, root: &Path) {
     if let Some(tree) = engine.tree(root) {
-        sink.send(BackendEvent::Tree(tree));
-        let classes = engine
+        let items = engine
             .classifications_under(root)
             .into_iter()
             .map(|c| (c.path, c.classification))
             .collect();
-        sink.send(BackendEvent::ReplaceClassifications(classes));
+        let classes = ClassStore::build(&tree, items);
+        sink.send(BackendEvent::Reloaded { tree, classes });
     }
 }
 
@@ -701,27 +702,35 @@ async fn reload_trees(
     }
 }
 
+/// Sends the snapshot's tree (or the subtree at `path`) with its classifications, indexed
+/// off the UI thread.
 async fn push_tree_and_classes(
     client: &mut Client,
     sink: &EventSink,
     snapshot: SnapshotRef,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let tree = load_snapshot(snapshot, path.to_path_buf()).await?;
-    sink.send(BackendEvent::Tree(tree));
-    if let Response::Classifications { items } = client
-        .request(Request::Classifications {
+    let (tree, response) = tokio::join!(
+        load_snapshot(snapshot, path.to_path_buf()),
+        client.request(Request::Classifications {
             root: path.to_path_buf(),
         })
-        .await?
-    {
-        sink.send(BackendEvent::ReplaceClassifications(
-            items
-                .into_iter()
-                .map(|c| (c.path, c.classification))
-                .collect(),
-        ));
-    }
+    );
+    let tree = tree?;
+    let Response::Classifications { items } = response? else {
+        sink.send(BackendEvent::Tree(tree));
+        return Ok(());
+    };
+    let event = tokio::task::spawn_blocking(move || {
+        let items = items
+            .into_iter()
+            .map(|c| (c.path, c.classification))
+            .collect();
+        let classes = ClassStore::build(&tree, items);
+        BackendEvent::Reloaded { tree, classes }
+    })
+    .await?;
+    sink.send(event);
     Ok(())
 }
 
