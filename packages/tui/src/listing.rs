@@ -227,12 +227,12 @@ impl ClassStore {
         self.generation += 1;
     }
 
-    /// Drops everything.
-    pub fn clear(&mut self) {
+    /// Replaces every classification with `items` in one step.
+    pub fn replace(&mut self, tree: Option<&Tree>, items: Vec<(PathBuf, Classification)>) {
         self.by_path.clear();
         self.by_node.clear();
         self.reclaimable_inside.clear();
-        self.generation += 1;
+        self.insert(tree, items);
     }
 
     /// Re-resolves every path against a new (or mutated) tree.

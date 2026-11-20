@@ -461,8 +461,8 @@ impl<B: Backend> App<B> {
             BackendEvent::Classifications(items) => {
                 self.classes.insert(self.tree.as_deref(), items);
             }
-            BackendEvent::ClearClassifications => {
-                self.classes.clear();
+            BackendEvent::ReplaceClassifications(items) => {
+                self.classes.replace(self.tree.as_deref(), items);
                 self.requested.clear();
             }
             BackendEvent::Plan(plan) => self.apply_plan(plan),

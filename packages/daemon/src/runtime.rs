@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bclean_actions::{CancelToken, Plan};
 use bclean_engine::{Engine, EngineError, Settings};
@@ -489,13 +489,23 @@ async fn load_snapshot(engine: &Engine, root: &std::path::Path) -> bool {
 /// Minimum time between two `TREE_UPDATED` events for one root sent to clients.
 pub const TREE_EVENT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// After saving a root's snapshot for clients took `T`, its next save waits at least
+/// `T × SAVE_IDLE_FACTOR`, so saves hold the root (and its refreshes) a quarter of the time
+/// at most.
+const SAVE_IDLE_FACTOR: u32 = 3;
+
 /// Forwards engine events to connected clients. A `TREE_UPDATED` reference is only useful
 /// once its snapshot file is current, so tree updates are dropped while nobody is subscribed
-/// and otherwise saved and sent at most once per [`TREE_EVENT_INTERVAL`] per root.
+/// and otherwise saved and sent at most once per [`TREE_EVENT_INTERVAL`] per root, or less
+/// often for roots whose snapshot takes long to save (see [`SAVE_IDLE_FACTOR`]): `/` changes
+/// whenever anything under `~` does, and saving its snapshot every second kept the daemon
+/// writing hundreds of megabytes a second while its refreshes waited.
 async fn forward_events(engine: Engine, sender: tokio::sync::broadcast::Sender<Event>) {
     use tokio::sync::broadcast::error::RecvError;
     let mut events = engine.subscribe();
     let mut pending: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut not_before: std::collections::BTreeMap<PathBuf, Instant> =
+        std::collections::BTreeMap::new();
     let mut flush = tokio::time::interval(TREE_EVENT_INTERVAL);
     flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -513,13 +523,21 @@ async fn forward_events(engine: Engine, sender: tokio::sync::broadcast::Sender<E
                 Err(RecvError::Closed) => break,
             },
             _ = flush.tick(), if !pending.is_empty() => {
-                for root in std::mem::take(&mut pending) {
+                let now = Instant::now();
+                let (due, waiting): (std::collections::BTreeSet<PathBuf>, _) = std::mem::take(&mut pending)
+                    .into_iter()
+                    .partition(|root| not_before.get(root).is_none_or(|t| now >= *t));
+                pending = waiting;
+                for root in due {
+                    let started = Instant::now();
                     match engine.saved_snapshot_ref(&root).await {
                         Ok(snapshot) => {
                             let _ = sender.send(Event::TreeUpdated(snapshot));
                         }
                         Err(e) => log::warn!("cannot save snapshot of {}: {e}", root.display()),
                     }
+                    let finished = Instant::now();
+                    not_before.insert(root, finished + (finished - started) * SAVE_IDLE_FACTOR);
                 }
             }
         }

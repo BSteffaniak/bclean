@@ -46,7 +46,11 @@ fn local_backend_renders_tree_and_classifications() {
         match rx.try_recv() {
             Some(event) => {
                 tree |= matches!(event, BackendEvent::Tree(_));
-                classes |= matches!(&event, BackendEvent::Classifications(c) if !c.is_empty());
+                classes |= matches!(
+                    &event,
+                    BackendEvent::Classifications(c) | BackendEvent::ReplaceClassifications(c)
+                        if !c.is_empty()
+                );
                 app.apply(event);
             }
             None => std::thread::sleep(Duration::from_millis(10)),

@@ -174,8 +174,9 @@ pub enum BackendEvent {
     },
     /// Classifications keyed by absolute path. May arrive at any time, in any number of batches.
     Classifications(Vec<(PathBuf, Classification)>),
-    /// Drops all known classifications (for example after a rules reload).
-    ClearClassifications,
+    /// Replaces all known classifications at once (after a reload), so no frame is drawn
+    /// between dropping the old set and receiving the new one.
+    ReplaceClassifications(Vec<(PathBuf, Classification)>),
     /// Answer to [`Backend::build_plan`].
     Plan(CleanPlan),
     /// Plan execution progress.

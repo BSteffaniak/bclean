@@ -273,8 +273,7 @@ fn send_tree(engine: &Engine, sink: &EventSink, root: &Path) {
             .into_iter()
             .map(|c| (c.path, c.classification))
             .collect();
-        sink.send(BackendEvent::ClearClassifications);
-        sink.send(BackendEvent::Classifications(classes));
+        sink.send(BackendEvent::ReplaceClassifications(classes));
     }
 }
 
@@ -684,6 +683,50 @@ async fn load_snapshot(snapshot: SnapshotRef, path: PathBuf) -> anyhow::Result<A
     .await?
 }
 
+/// After a reload that took `T`, the next one waits `T × RELOAD_IDLE_FACTOR`, so reloading
+/// takes at most a quarter of the time.
+const RELOAD_IDLE_FACTOR: u32 = 3;
+
+/// Reloads the browsed tree after each `TREE_UPDATED`, latest snapshot first and only.
+///
+/// Reloading reads the whole snapshot (hundreds of megabytes for `/`) and every
+/// classification. Handled inline, one per event, a root that changes every second fell
+/// further behind with every reload while the queued events kept the UI busy and
+/// unresponsive. Here updates arriving during a reload or its pause replace each other.
+async fn reload_trees(
+    mut updates: tokio::sync::watch::Receiver<Option<SnapshotRef>>,
+    options: ClientOptions,
+    sink: EventSink,
+    shared: Arc<Mutex<DaemonShared>>,
+) {
+    while updates.changed().await.is_ok() {
+        if sink.is_closed() {
+            break;
+        }
+        let Some(snapshot) = updates.borrow_and_update().clone() else {
+            continue;
+        };
+        let path = {
+            let shared = shared.lock();
+            if shared.tree_root.as_ref() != Some(&snapshot.root) {
+                // Another root was opened meanwhile.
+                continue;
+            }
+            shared.path.clone()
+        };
+        let started = Instant::now();
+        let result = async {
+            let mut client = Client::connect(&options).await?;
+            push_tree_and_classes(&mut client, &sink, snapshot, &path).await
+        }
+        .await;
+        if let Err(e) = result {
+            sink.send(BackendEvent::Error(format!("reload: {e:#}")));
+        }
+        tokio::time::sleep(started.elapsed() * RELOAD_IDLE_FACTOR).await;
+    }
+}
+
 async fn push_tree_and_classes(
     client: &mut Client,
     sink: &EventSink,
@@ -698,8 +741,7 @@ async fn push_tree_and_classes(
         })
         .await?
     {
-        sink.send(BackendEvent::ClearClassifications);
-        sink.send(BackendEvent::Classifications(
+        sink.send(BackendEvent::ReplaceClassifications(
             items
                 .into_iter()
                 .map(|c| (c.path, c.classification))
@@ -716,6 +758,13 @@ impl Backend for DaemonBackend {
         let options = self.options.clone();
         let dashboard = Arc::clone(&self.dashboard);
         self.spawn_dashboard(&sink);
+        let (reload, updates) = tokio::sync::watch::channel(None);
+        self.handle.spawn(reload_trees(
+            updates,
+            options.clone(),
+            sink.clone(),
+            Arc::clone(&shared),
+        ));
         // Event subscription.
         let event_sink = sink;
         self.handle.spawn(async move {
@@ -754,15 +803,7 @@ impl Backend for DaemonBackend {
                         )));
                     }
                     Event::TreeUpdated(snapshot) if tree_root.as_ref() == Some(&snapshot.root) => {
-                        let Ok(mut requests) = Client::connect(&options).await else {
-                            continue;
-                        };
-                        if let Err(e) =
-                            push_tree_and_classes(&mut requests, &event_sink, snapshot, &event_path)
-                                .await
-                        {
-                            event_sink.send(BackendEvent::Error(format!("reload: {e:#}")));
-                        }
+                        reload.send_replace(Some(snapshot));
                     }
                     Event::Volumes { volumes } => {
                         event_sink.send(BackendEvent::Volumes(volumes));
