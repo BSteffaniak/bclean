@@ -393,6 +393,9 @@ struct Inner {
     one_filesystem: bool,
     /// Set by [`Engine::stop_scans`]: full scans are cancelled as they start.
     stopping: AtomicBool,
+    /// The latest copy into outer roots; each waits for the one before (see
+    /// [`Engine::sync_outer`]).
+    sync_tail: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The shared bclean engine. Cheap to clone (all state is behind an `Arc`).
@@ -463,6 +466,7 @@ impl Engine {
                 volume_roots: Mutex::new(Vec::new()),
                 one_filesystem: options.one_filesystem,
                 stopping: AtomicBool::new(false),
+                sync_tail: Mutex::new(None),
                 exec_lock: tokio::sync::Mutex::new(()),
             }),
         })
@@ -791,6 +795,7 @@ impl Engine {
         self.persist(slot).await?;
         let snapshot = self.require_ref(&slot.root)?;
         self.emit(Event::TreeUpdated(snapshot.clone()));
+        self.sync_outer(slot, vec![slot.root.clone()]).await;
         log::info!(
             "scanned {} in {:.2?} ({} files, {} dirs, {} issues)",
             slot.root.display(),
@@ -1056,9 +1061,9 @@ impl Engine {
 
     /// Rescans one directory and grafts it (with `expand`, a summarized directory is
     /// materialized) into the deepest loaded root containing it, and returns that root's
-    /// snapshot and the rescanned subtree. Outer roots containing it (`/` around `~`) are
-    /// updated in the background, each publishing `TREE_UPDATED`, so a client browsing them
-    /// stays in sync without the caller waiting; those without a tree in memory are skipped.
+    /// snapshot and the rescanned subtree. Outer roots containing it (`/` around `~`) copy
+    /// the result in the background (see [`Self::sync_outer`]), each publishing
+    /// `TREE_UPDATED`, so a client browsing them stays in sync without the caller waiting.
     ///
     /// # Errors
     ///
@@ -1070,46 +1075,16 @@ impl Engine {
         expand: bool,
     ) -> Result<(SnapshotRef, Option<Arc<Tree>>)> {
         let path = absolute(path)?;
-        let mut roots: Vec<PathBuf> = self
-            .roots()
-            .into_iter()
-            .filter(|root| path.starts_with(root))
-            .collect();
-        roots.sort_by_key(|root| std::cmp::Reverse(root.components().count()));
-        let Some(deepest) = roots.first().cloned() else {
+        let Some(deepest) = self.root_for(&path) else {
             return Err(EngineError::NotFound(format!(
                 "{} is not indexed",
                 path.display()
             )));
         };
-        let outer: Vec<PathBuf> = roots.into_iter().skip(1).collect();
-        let result = {
-            let slot = self.slot(&deepest);
-            let _op = slot.op.lock().await;
-            self.refresh_locked(&slot, vec![path.clone()], RefreshMode::Deep { expand })
-                .await?
-        };
-        if !outer.is_empty() {
-            let engine = self.clone();
-            tokio::spawn(async move {
-                for root in outer {
-                    let slot = engine.slot(&root);
-                    let _op = slot.op.lock().await;
-                    if slot.state.read().tree.is_none() {
-                        continue;
-                    }
-                    let mode = RefreshMode::Deep { expand };
-                    if let Err(e) = engine.refresh_locked(&slot, vec![path.clone()], mode).await {
-                        log::warn!(
-                            "rescan of {} in {} failed: {e}",
-                            path.display(),
-                            root.display()
-                        );
-                    }
-                }
-            });
-        }
-        Ok(result)
+        let slot = self.slot(&deepest);
+        let _op = slot.op.lock().await;
+        self.refresh_locked(&slot, vec![path], RefreshMode::Deep { expand })
+            .await
     }
 
     /// Reconciles directories whose own entries changed (grouped by root): each is re-listed,
@@ -1127,7 +1102,8 @@ impl Engine {
     }
 
     async fn apply_dirs(&self, dirs: Vec<PathBuf>, mode: RefreshMode) -> Result<()> {
-        for (root, mut dirs) in self.group_by_root(dirs) {
+        let outer = matches!(mode, RefreshMode::Shallow);
+        for (root, mut dirs) in self.group_by_root(dirs, outer) {
             dirs.sort();
             dirs.dedup();
             let slot = self.slot(&root);
@@ -1143,11 +1119,14 @@ impl Engine {
     /// Groups `dirs` by the loaded roots holding them, deepest root first, dropping paths
     /// outside every root and bclean's own paths.
     ///
-    /// A path inside nested roots (`~` inside `/`) belongs to each of them: the deepest one
-    /// always, and every outer one whose tree covers it (see [`Self::tree_covers`]). Routing
-    /// only to the deepest root left a client browsing `/` with a tree that never learned of
-    /// changes under `~`, down to offering to delete directories that were long gone.
-    fn group_by_root(&self, dirs: Vec<PathBuf>) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    /// A path inside nested roots (`~` inside `/`) belongs to the deepest one, and with
+    /// `outer` also to every outer one whose tree covers it (see [`Self::tree_covers`]).
+    /// Routing only to the deepest root left a client browsing `/` with a tree that never
+    /// learned of changes under `~`, down to offering to delete directories that were long
+    /// gone. Shallow reconciles are one listing per directory, so every root does its own;
+    /// subtree rescans run in the deepest root only, and outer roots copy the result (see
+    /// [`Self::sync_outer`]).
+    fn group_by_root(&self, dirs: Vec<PathBuf>, outer: bool) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut roots: Vec<(PathBuf, Option<Arc<Tree>>)> = self
             .slots()
             .into_iter()
@@ -1170,6 +1149,9 @@ impl Engine {
                 .entry(deepest.clone())
                 .or_default()
                 .push(dir.clone());
+            if !outer {
+                continue;
+            }
             for (root, tree) in holding {
                 if tree.as_deref().is_some_and(|t| Self::tree_covers(t, &dir)) {
                     by_root.entry(root.clone()).or_default().push(dir.clone());
@@ -1203,7 +1185,7 @@ impl Engine {
     /// `MustScanSubDirs`), often for a whole root. Without a budget, every loss of a large
     /// root costs a full scan on every core, back to back for as long as the load lasts.
     async fn request_rescans(&self, dirs: Vec<PathBuf>) -> Result<()> {
-        for (root, dirs) in self.group_by_root(dirs) {
+        for (root, dirs) in self.group_by_root(dirs, false) {
             let slot = self.slot(&root);
             {
                 let mut state = slot.state.write();
@@ -1302,7 +1284,7 @@ impl Engine {
     /// * Same as [`Engine::apply_dirty`]
     pub async fn apply_batch(&self, batch: ChangeBatch) -> Result<()> {
         if batch.must_full_rescan {
-            for (root, _) in self.group_by_root(batch.dirty.clone()) {
+            for (root, _) in self.group_by_root(batch.dirty.clone(), false) {
                 let slot = self.slot(&root);
                 let mut state = slot.state.write();
                 if !state.rescan_owed {
@@ -1332,7 +1314,19 @@ impl Engine {
         mode: RefreshMode,
     ) -> Result<(SnapshotRef, Option<Arc<Tree>>)> {
         let settings = self.settings();
-        let Some(tree) = slot.state.write().tree.take() else {
+        let deep = matches!(mode, RefreshMode::Deep { .. });
+        // Subtree rescans take seconds, so they work on a copy and readers (the dashboard)
+        // keep the current tree meanwhile. Shallow reconciles take milliseconds, and copying a
+        // large tree for each would cost more than they do: they take the tree itself.
+        let tree = {
+            let mut state = slot.state.write();
+            if deep {
+                state.tree.clone()
+            } else {
+                state.tree.take()
+            }
+        };
+        let Some(tree) = tree else {
             return Ok((self.full_scan_locked(slot, None).await?.snapshot, None));
         };
         let (mut classes, cooldowns) = {
@@ -1363,7 +1357,7 @@ impl Engine {
         let (tree, classes, result, dirs_read) = match joined {
             Ok(v) => v,
             Err(e) => {
-                // The tree was lost with the panicked task: rebuild it from scratch.
+                // The tree may have been lost with the panicked task: rebuild it from scratch.
                 log::error!("refresh of {} failed: {e}", slot.root.display());
                 return Ok((self.full_scan_locked(slot, None).await?.snapshot, None));
             }
@@ -1413,7 +1407,113 @@ impl Engine {
             return Ok((snapshot, None));
         }
         self.emit(Event::TreeUpdated(snapshot.clone()));
+        if deep {
+            self.sync_outer(slot, affected).await;
+        }
         Ok((snapshot, subtree))
+    }
+
+    /// Copies `paths`, just rescanned in `slot` (a nested root such as `~`), into every loaded
+    /// root around it (`/`), in the background. Called with `slot`'s operation lock held, so
+    /// the copies come from a tree no refresh is changing; they are applied in the order they
+    /// were taken.
+    ///
+    /// Outer roots never rescan what a nested root just rescanned: a lost-history rescan of
+    /// `~` takes tens of seconds on every core, and repeating it for `/` doubled that cost for
+    /// the same result.
+    async fn sync_outer(&self, slot: &Arc<RootSlot>, paths: Vec<PathBuf>) {
+        let mut outer: Vec<Arc<RootSlot>> = self
+            .slots()
+            .into_iter()
+            .filter(|o| o.root != slot.root && slot.root.starts_with(&o.root))
+            .collect();
+        if outer.is_empty() || paths.is_empty() {
+            return;
+        }
+        outer.sort_by_key(|o| std::cmp::Reverse(o.root.components().count()));
+        let (tree, classes) = {
+            let state = slot.state.read();
+            (state.tree.clone(), state.classes.clone())
+        };
+        let Some(tree) = tree else {
+            return;
+        };
+        let extracted =
+            tokio::task::spawn_blocking(move || refresh::extract_grafts(&tree, &classes, &paths))
+                .await;
+        let grafts = match extracted {
+            Ok(grafts) => Arc::new(grafts),
+            Err(e) => {
+                log::warn!(
+                    "copying {} for outer roots failed: {e}",
+                    slot.root.display()
+                );
+                return;
+            }
+        };
+        let engine = self.clone();
+        let mut tail = self.inner.sync_tail.lock();
+        let previous = tail.take();
+        *tail = Some(tokio::spawn(async move {
+            if let Some(previous) = previous {
+                let _ = previous.await;
+            }
+            for slot in outer {
+                if let Err(e) = engine.adopt_grafts(&slot, Arc::clone(&grafts)).await {
+                    log::warn!("updating {} failed: {e}", slot.root.display());
+                }
+            }
+        }));
+    }
+
+    /// Replaces the subtrees in `grafts` in `slot`'s tree (see [`Self::sync_outer`]).
+    async fn adopt_grafts(
+        &self,
+        slot: &Arc<RootSlot>,
+        grafts: Arc<Vec<refresh::Graft>>,
+    ) -> Result<()> {
+        let _op = slot.op.lock().await;
+        let (tree, mut classes) = {
+            let state = slot.state.read();
+            (state.tree.clone(), state.classes.clone())
+        };
+        let Some(tree) = tree else {
+            return Ok(());
+        };
+        let rules = Arc::clone(&self.settings().rules);
+        let started = Instant::now();
+        // Works on a copy (see `refresh_locked`): grafting `~` into `/` is not instant.
+        let (tree, classes, adopted) = tokio::task::spawn_blocking(move || {
+            let mut tree = Arc::unwrap_or_clone(tree);
+            let mut adopted = 0_usize;
+            for graft in grafts.iter() {
+                if Self::tree_covers(&tree, &graft.path)
+                    && refresh::adopt(&rules, &mut tree, &mut classes, graft)
+                {
+                    adopted += 1;
+                }
+            }
+            (tree, classes, adopted)
+        })
+        .await?;
+        if adopted == 0 {
+            return Ok(());
+        }
+        {
+            let mut state = slot.state.write();
+            state.tree = Some(Arc::new(tree));
+            state.classes = classes;
+            state.generation += 1;
+            state.refreshes += 1;
+            state.unsaved_since.get_or_insert_with(Instant::now);
+        }
+        log::debug!(
+            "copied {adopted} subtree(s) into {} in {:.2?}",
+            slot.root.display(),
+            started.elapsed()
+        );
+        self.emit(Event::TreeUpdated(self.require_ref(&slot.root)?));
+        Ok(())
     }
 
     /// How long an expensive directory waits before it is refreshed again, after a refresh

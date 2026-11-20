@@ -11,7 +11,7 @@ use bclean_actions::{CancelToken, ExecutionReport, ItemResult, Plan};
 use bclean_client::{Client, ClientOptions};
 use bclean_engine::{ActionProgress, Engine, Settings};
 use bclean_protocol::{Event, Request, Response, SnapshotRef, Topic};
-use bclean_tree::{EntryMeta, NodeId, Tree};
+use bclean_tree::{NodeId, Tree};
 use bclean_tui::{
     ActionOverride, Backend, BackendEvent, BackendMode, BackendStatus, CleanPlan, CleanReport,
     EventSink, ExecutionEvent, PlanRequest, ScanProgress,
@@ -168,32 +168,6 @@ fn scan_progress(
         elapsed: started.elapsed(),
         expected_entries: None,
     }
-}
-
-/// Copies the subtree at `node` into a standalone tree rooted at its path.
-#[must_use]
-pub fn extract_subtree(tree: &Tree, node: NodeId) -> Tree {
-    if node == NodeId::ROOT {
-        return tree.clone();
-    }
-    let meta = |id: NodeId| {
-        let info = tree.info(id);
-        let child_items: u64 = tree.children(id).map(|c| tree.info(c).items).sum();
-        let mut meta = EntryMeta::new(info.kind, info.own_apparent, info.own_allocated, info.mtime)
-            .with_flags(info.flags);
-        meta.items = info.items.saturating_sub(child_items);
-        meta
-    };
-    let mut out = Tree::new(tree.path(node), meta(node));
-    let mut stack = vec![(node, NodeId::ROOT)];
-    while let Some((src, dst)) = stack.pop() {
-        for child in tree.children(src) {
-            let id = out.add_child_raw(dst, tree.name(child), meta(child));
-            stack.push((child, id));
-        }
-    }
-    out.recompute_aggregates();
-    out
 }
 
 // ----- local -----
@@ -677,7 +651,7 @@ async fn load_snapshot(snapshot: SnapshotRef, path: PathBuf) -> anyhow::Result<A
         Ok(Arc::new(if node == NodeId::ROOT {
             tree
         } else {
-            extract_subtree(&tree, node)
+            tree.extract(node)
         }))
     })
     .await?

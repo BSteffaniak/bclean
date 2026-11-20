@@ -562,9 +562,10 @@ async fn expand_updates_every_root_containing_the_path() {
     );
     assert!(subtree.is_some());
     assert!(expanded(&inner));
-    // The outer root catches up in the background and announces it.
+    // The outer root catches up in the background and announces it. (Copies of the earlier
+    // scan of `inner` may announce it first.)
     let mut updated = Vec::new();
-    while !updated.contains(&root) {
+    while !(updated.contains(&inner) && updated.contains(&root) && expanded(&root)) {
         let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
             .await
             .expect("outer root never updated")
@@ -613,6 +614,77 @@ async fn changes_update_every_root_containing_them() {
             .iter()
             .all(|c| !c.path.starts_with(&target)),
         "a deleted entry is still classified"
+    );
+}
+
+/// Lost history inside a nested root is rescanned there once; outer roots copy the result
+/// (with its classifications) instead of rescanning the same subtree themselves.
+#[tokio::test(flavor = "multi_thread")]
+async fn nested_rescans_are_copied_into_outer_roots() {
+    // No rescan budget: the second loss is rescanned at once.
+    let (_dir, root, engine) = setup("[monitor]\nrescan_budget_percent = 100\n").await;
+    let inner = root.join("web");
+    write(&inner.join("lib/main.js"), 1_000);
+    engine.scan(&root).await.unwrap();
+    engine.scan(&inner).await.unwrap();
+    let lost = |dir: PathBuf| bclean_watch::ChangeBatch {
+        dirty: vec![dir],
+        must_full_rescan: true,
+        cursor: None,
+    };
+    let has = |r: &Path, p: &Path| engine.tree(r).unwrap().find(p).is_some();
+    let wait_for_outer = |path: PathBuf| {
+        let engine = engine.clone();
+        let root = root.clone();
+        async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while engine.tree(&root).unwrap().find(&path).is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{} never reached the outer root",
+                    path.display()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    };
+
+    // A subtree of the nested root.
+    let lib = inner.join("lib/index.js");
+    write(&lib, 3_000);
+    engine.apply_batch(lost(inner.join("lib"))).await.unwrap();
+    assert!(has(&inner, &lib));
+    wait_for_outer(lib.clone()).await;
+    let statuses = engine.root_statuses();
+    let full_scans = |r: &Path| statuses.iter().find(|s| s.root == r).unwrap().full_scans;
+    assert_eq!(full_scans(&root), 1, "the outer root was fully rescanned");
+
+    // The nested root as a whole (a full scan there).
+    let cargo = inner.join("api/Cargo.toml");
+    write(&cargo, 10);
+    write(&inner.join("api/target/debug/app"), 30_000);
+    engine.apply_batch(lost(inner.clone())).await.unwrap();
+    let target = inner.join("api/target");
+    wait_for_outer(target.clone()).await;
+    assert!(
+        engine
+            .classifications_under(&root)
+            .iter()
+            .any(|c| c.path == target),
+        "the copied classifications are missing"
+    );
+    let statuses = engine.root_statuses();
+    let full_scans = |r: &Path| statuses.iter().find(|s| s.root == r).unwrap().full_scans;
+    assert_eq!(full_scans(&inner), 2);
+    assert_eq!(full_scans(&root), 1, "the outer root was fully rescanned");
+    let sizes = |r: &Path| {
+        let tree = engine.tree(r).unwrap();
+        tree.info(tree.find(&inner).unwrap()).total_allocated
+    };
+    assert_eq!(
+        sizes(&root),
+        sizes(&inner),
+        "the copy differs from the original"
     );
 }
 

@@ -85,6 +85,9 @@ pub struct VolumeTrend {
     bytes_per_sec: Option<f64>,
 }
 
+/// How long [`Engine::dashboard`] waits for a root's tree to come back from a refresh.
+const TREE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Engine {
     /// Computes the dashboard summary over the index roots (`monitor.index_roots`) plus
     /// `extra_roots` (for example the root a client is browsing), counting each path once:
@@ -117,6 +120,7 @@ impl Engine {
         let in_scope =
             |path: &Path| !one_filesystem || extra.iter().any(|e| same_filesystem(e, path));
         wanted.retain(|root| in_scope(root));
+        self.await_trees(&wanted).await;
         let scope = self.scoped_roots(&wanted, safe_after, now);
 
         let mut summary = DashboardSummary {
@@ -172,6 +176,21 @@ impl Engine {
         }
         summary.activity = self.activity(now).await;
         Ok(summary)
+    }
+
+    /// Waits (up to [`TREE_WAIT`]) for loaded roots among `wanted` whose tree is out for a
+    /// shallow refresh, which takes milliseconds: a summary computed meanwhile would leave the
+    /// root out, and its numbers would jump between refreshes.
+    async fn await_trees(&self, wanted: &BTreeSet<PathBuf>) {
+        for slot in self.slots() {
+            let out = wanted.contains(&slot.root) && {
+                let state = slot.state.read();
+                state.tree.is_none() && state.generation > 0 && state.progress.is_none()
+            };
+            if out {
+                let _ = tokio::time::timeout(TREE_WAIT, slot.op.lock()).await;
+            }
+        }
     }
 
     /// Loaded roots among `wanted`, outermost first, with staleness judged against

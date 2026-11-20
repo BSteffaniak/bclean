@@ -883,11 +883,30 @@ impl Tree {
     /// Returns a copy without removed slots or orphaned name bytes. Node ids change.
     #[must_use]
     pub fn compact(&self) -> Self {
-        let root = self.entry_meta(NodeId::ROOT);
-        let mut out =
-            Self::with_capacity(self.root_path.clone(), root, self.len(), self.names.len());
-        out.copy_aggregates_from(NodeId::ROOT, self, NodeId::ROOT);
-        let mut stack = vec![(NodeId::ROOT, NodeId::ROOT)];
+        self.extract_with_capacity(NodeId::ROOT, self.len(), self.names.len())
+    }
+
+    /// Returns a compact copy of the subtree at `node`, rooted at its path. Node ids change.
+    ///
+    /// # Panics
+    ///
+    /// * If `node` is not a live node
+    #[must_use]
+    pub fn extract(&self, node: NodeId) -> Self {
+        assert!(self.contains(node), "node {node:?} is not live");
+        let nodes = usize::try_from(self.items[node.index()]).unwrap_or(0);
+        self.extract_with_capacity(node, nodes, 0)
+    }
+
+    fn extract_with_capacity(&self, node: NodeId, nodes: usize, name_bytes: usize) -> Self {
+        let root_path = if node == NodeId::ROOT {
+            self.root_path.clone()
+        } else {
+            self.path(node)
+        };
+        let mut out = Self::with_capacity(root_path, self.entry_meta(node), nodes, name_bytes);
+        out.copy_aggregates_from(NodeId::ROOT, self, node);
+        let mut stack = vec![(node, NodeId::ROOT)];
         while let Some((src, dst)) = stack.pop() {
             // Preserve sibling order: children are prepended, so insert in reverse.
             let mut children: Vec<NodeId> = self.children(src).collect();
@@ -1130,6 +1149,27 @@ mod tests {
         tree.remove_subtree(a);
         assert_eq!(tree.size(NodeId::ROOT, SizeMode::Allocated), 50);
         assert_eq!(tree.len(), 2);
+    }
+
+    #[test]
+    fn extract_copies_a_live_subtree_rooted_at_its_path() {
+        let (mut tree, a, f1, _) = sample();
+        tree.add_child(a, OsStr::new("f3"), file(25, 30));
+        tree.remove_subtree(f1);
+        let sub = tree.extract(a);
+        assert_eq!(sub.root_path(), Path::new("/root/a"));
+        assert_eq!(sub.name(NodeId::ROOT), OsStr::new("a"));
+        assert_eq!(sub.len(), 2);
+        assert_eq!(sub.info(NodeId::ROOT), tree.info(a));
+        assert!(sub.find(Path::new("/root/a/f3")).is_some());
+        assert!(sub.find(Path::new("/root/a/f1")).is_none());
+
+        // Grafted back in place of the original, nothing changes.
+        let before = tree.info(NodeId::ROOT);
+        tree.remove_subtree(a);
+        tree.graft(NodeId::ROOT, &sub);
+        assert_eq!(tree.info(NodeId::ROOT), before);
+        assert!(tree.find(Path::new("/root/a/f3")).is_some());
     }
 
     #[test]

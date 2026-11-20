@@ -493,17 +493,105 @@ pub fn reclassify(
     }
 }
 
+/// A subtree of a nested root (`~`) as just refreshed, for the roots around it (`/`).
+#[derive(Debug)]
+pub struct Graft {
+    /// Where the subtree lives.
+    pub path: PathBuf,
+    /// The subtree rooted at `path`, or `None` when `path` no longer exists.
+    pub tree: Option<Tree>,
+    /// Classifications at and under `path`.
+    pub classes: Vec<(PathBuf, Classification)>,
+}
+
+/// Copies the subtrees at `paths` (and their classifications) out of `tree`. Paths nested in
+/// another listed path are covered by it.
+#[must_use]
+pub fn extract_grafts(
+    tree: &Tree,
+    classes: &BTreeMap<PathBuf, Classification>,
+    paths: &[PathBuf],
+) -> Vec<Graft> {
+    let mut paths = paths.to_vec();
+    paths.sort();
+    paths.dedup();
+    let mut outer: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !outer.last().is_some_and(|o| path.starts_with(o)) {
+            outer.push(path);
+        }
+    }
+    outer
+        .into_iter()
+        .map(|path| Graft {
+            tree: tree.find(&path).map(|node| tree.extract(node)),
+            classes: under(classes, &path)
+                .map(|(p, c)| (p.clone(), c.clone()))
+                .collect(),
+            path,
+        })
+        .collect()
+}
+
+/// Replaces `graft.path` in `tree` (an outer root) with the graft's copy, and its
+/// classifications likewise. Returns `false` when `tree` has nowhere to put it.
+///
+/// The copied classifications were made in the nested root. Paths inside an entry the outer
+/// root classifies as a whole are re-classified there instead, as a refresh would.
+pub fn adopt(
+    rules: &RuleSet,
+    tree: &mut Tree,
+    classes: &mut BTreeMap<PathBuf, Classification>,
+    graft: &Graft,
+) -> bool {
+    let (Some(parent_path), Some(name)) = (graft.path.parent(), graft.path.file_name()) else {
+        return false;
+    };
+    let Some(parent) = tree.find(parent_path) else {
+        return false;
+    };
+    if tree.kind(parent) != EntryKind::Dir {
+        return false;
+    }
+    let existing = tree.child_by_name(parent, name);
+    if existing.is_none() && graft.tree.is_none() {
+        return false;
+    }
+    if let Some(node) = existing {
+        tree.remove_subtree(node);
+    }
+    if let Some(sub) = &graft.tree {
+        tree.graft(parent, sub);
+    }
+    if graft
+        .path
+        .ancestors()
+        .skip(1)
+        .any(|a| classes.contains_key(a))
+    {
+        reclassify(rules, tree, classes, std::slice::from_ref(&graft.path));
+    } else {
+        remove_under(classes, &graft.path);
+        classes.extend(graft.classes.iter().cloned());
+    }
+    true
+}
+
+/// `start` and every path below it in `map`, in order.
+fn under<'a, V>(
+    map: &'a BTreeMap<PathBuf, V>,
+    start: &'a Path,
+) -> impl Iterator<Item = (&'a PathBuf, &'a V)> {
+    map.range::<Path, _>((Bound::Included(start), Bound::Unbounded))
+        .take_while(move |(path, _)| path.starts_with(start))
+}
+
 /// Removes `start` and every path below it from `map`.
 ///
 /// Paths order component-wise, so they form one contiguous range: a busy directory changes
 /// hundreds of paths per batch, and scanning the whole map for each was quadratic.
 fn remove_under<V>(map: &mut BTreeMap<PathBuf, V>, start: &Path) {
-    let doomed: Vec<PathBuf> = map
-        .range::<Path, _>((Bound::Included(start), Bound::Unbounded))
-        .map(|(path, _)| path)
-        .take_while(|path| path.starts_with(start))
-        .cloned()
-        .collect();
+    let doomed: Vec<PathBuf> = under(map, start).map(|(path, _)| path.clone()).collect();
     for path in doomed {
         map.remove(&path);
     }
