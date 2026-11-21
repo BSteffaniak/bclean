@@ -341,6 +341,27 @@ async fn trim_paths_keep_release_binaries() {
             .unwrap_or_default()
             .contains("release/app")
     );
+
+    // Trimmed, it holds only what a trim keeps: nothing left to offer.
+    let class = engine
+        .classifications_under(&root)
+        .into_iter()
+        .find(|c| c.path == root.join("app/target"))
+        .map(|c| c.classification);
+    assert!(
+        class
+            .as_ref()
+            .is_none_or(|c| c.size == 0 && !c.is_reclaimable()),
+        "{class:?}"
+    );
+    assert!(
+        engine
+            .plan_auto()
+            .items
+            .iter()
+            .all(|i| i.path != root.join("app/target")),
+        "a trimmed target is not cleaned again"
+    );
 }
 
 /// What Cargo did not put in `target/` (a dev database) is never cleaned with it: the folder

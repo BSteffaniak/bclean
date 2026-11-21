@@ -30,7 +30,7 @@ mod volumes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bclean_actions::{
@@ -396,6 +396,9 @@ struct Inner {
     /// The latest copy into outer roots; each waits for the one before (see
     /// [`Engine::sync_outer`]).
     sync_tail: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Copies into outer roots queued so far, and (sent) finished so far, in order.
+    syncs_queued: AtomicU64,
+    syncs_done: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// The shared bclean engine. Cheap to clone (all state is behind an `Arc`).
@@ -467,6 +470,8 @@ impl Engine {
                 one_filesystem: options.one_filesystem,
                 stopping: AtomicBool::new(false),
                 sync_tail: Mutex::new(None),
+                syncs_queued: AtomicU64::new(0),
+                syncs_done: Arc::new(tokio::sync::watch::Sender::new(0)),
                 exec_lock: tokio::sync::Mutex::new(()),
             }),
         })
@@ -1107,6 +1112,9 @@ impl Engine {
             dirs.sort();
             dirs.dedup();
             let slot = self.slot(&root);
+            if self.has_inner_roots(&root) {
+                self.await_syncs().await;
+            }
             let _op = slot.op.lock().await;
             if slot.state.read().tree.is_none() {
                 continue;
@@ -1454,7 +1462,12 @@ impl Engine {
         let engine = self.clone();
         let mut tail = self.inner.sync_tail.lock();
         let previous = tail.take();
+        let done = SyncDone {
+            done: Arc::clone(&self.inner.syncs_done),
+            seq: self.inner.syncs_queued.fetch_add(1, Ordering::SeqCst) + 1,
+        };
         *tail = Some(tokio::spawn(async move {
+            let _done = done;
             if let Some(previous) = previous {
                 let _ = previous.await;
             }
@@ -1464,6 +1477,26 @@ impl Engine {
                 }
             }
         }));
+    }
+
+    /// Whether another loaded root lies inside `root` (`~` inside `/`).
+    fn has_inner_roots(&self, root: &Path) -> bool {
+        self.slots()
+            .iter()
+            .any(|s| s.root != root && s.root.starts_with(root))
+    }
+
+    /// Waits for the copies into outer roots queued so far (see [`Self::sync_outer`]).
+    ///
+    /// A copy holds an inner root's subtree as last rescanned. Applied after a later shallow
+    /// reconcile of the outer root, it put back what that reconcile had just removed: a
+    /// directory cleaned while `~` was being rescanned stayed in `/` (and in its clean-safe
+    /// list) until something else changed next to it. Outer roots therefore reconcile only
+    /// once the copies queued before have landed.
+    async fn await_syncs(&self) {
+        let queued = self.inner.syncs_queued.load(Ordering::SeqCst);
+        let mut done = self.inner.syncs_done.subscribe();
+        let _ = done.wait_for(|d| *d >= queued).await;
     }
 
     /// Replaces the subtrees in `grafts` in `slot`'s tree (see [`Self::sync_outer`]).
@@ -1844,18 +1877,40 @@ impl Engine {
             cancelled: report.cancelled,
         });
         if !report.dry_run {
-            let dirs: Vec<PathBuf> = report
-                .results
-                .iter()
-                .filter(|r| r.outcome == ItemOutcome::Done)
-                .filter_map(|r| r.path.parent().map(Path::to_path_buf))
-                .collect();
             drop(exec);
-            if let Err(e) = self.apply_dirty(dirs).await {
-                log::warn!("failed to refresh the index after cleaning: {e}");
-            }
+            self.refresh_after_clean(&report).await;
         }
         Ok(report)
+    }
+
+    /// Refreshes the index around the items `report` cleaned.
+    async fn refresh_after_clean(&self, report: &ExecutionReport) {
+        let done: Vec<&Path> = report
+            .results
+            .iter()
+            .filter(|r| r.outcome == ItemOutcome::Done)
+            .map(|r| r.path.as_path())
+            .collect();
+        // What an action left in place (a trimmed `target/` with its release binaries) is
+        // measured again: its parent's listing does not look inside it, so the index kept its
+        // old size and offered it for cleaning again and again.
+        let remaining: Vec<PathBuf> = done
+            .iter()
+            .filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_dir()))
+            .map(|p| p.to_path_buf())
+            .collect();
+        let parents: Vec<PathBuf> = done
+            .iter()
+            .filter_map(|p| p.parent().map(Path::to_path_buf))
+            .collect();
+        let refreshed = async {
+            self.apply_dirs(remaining, RefreshMode::Deep { expand: false })
+                .await?;
+            self.apply_dirty(parents).await
+        };
+        if let Err(e) = refreshed.await {
+            log::warn!("failed to refresh the index after cleaning: {e}");
+        }
     }
 
     /// Reverses a journaled action and refreshes the index around the restored path.
@@ -2258,6 +2313,19 @@ pub fn preflight_plan(
 }
 
 /// Classification for an explicitly selected, unclassified path.
+/// Marks a copy into outer roots finished, however its task ends (see
+/// [`Engine::await_syncs`]).
+struct SyncDone {
+    done: Arc<tokio::sync::watch::Sender<u64>>,
+    seq: u64,
+}
+
+impl Drop for SyncDone {
+    fn drop(&mut self) {
+        self.done.send_modify(|d| *d = (*d).max(self.seq));
+    }
+}
+
 fn explicit_class(size: u64) -> Classification {
     Classification {
         rule_id: None,

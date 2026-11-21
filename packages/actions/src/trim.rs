@@ -12,6 +12,7 @@
 //!
 //! Symlinks are never followed: a link is kept or removed as an entry of its own.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::Metadata;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -145,6 +146,109 @@ fn trim_dir(
         }
     }
     Ok(remains)
+}
+
+/// Bounds for [`trimmable`].
+#[derive(Debug, Clone, Copy)]
+pub struct TrimProbe {
+    /// Stop once this many bytes are known to be removable.
+    pub enough: u64,
+    /// Stop after visiting this many entries.
+    pub max_entries: usize,
+    /// Count allocated (on-disk) bytes instead of file lengths.
+    pub allocated: bool,
+}
+
+impl Default for TrimProbe {
+    fn default() -> Self {
+        Self {
+            enough: 64 << 20,
+            max_entries: 20_000,
+            allocated: true,
+        }
+    }
+}
+
+/// Bytes a [`trim`] of `dir` would free, if fewer than `probe.enough`.
+///
+/// `None` when there is at least that much, when `probe.max_entries` entries were not enough
+/// to tell, or when the directory cannot be read.
+///
+/// A trimmed directory holds only what its trim keeps, so it is listed in full in a few
+/// entries and reports what little a second trim would free (usually nothing). An untrimmed
+/// one reaches `enough` within its first few build products. Removed files whose data a kept
+/// file still holds (Cargo hard-links `release/bcode` into `deps/`) free nothing and are
+/// not counted.
+#[must_use]
+pub fn trimmable(dir: &Path, keeper: &Keeper, probe: TrimProbe) -> Option<u64> {
+    let mut removable: BTreeMap<FileId, u64> = BTreeMap::new();
+    let mut kept: BTreeSet<FileId> = BTreeSet::new();
+    let mut total = 0_u64;
+    let mut visited = 0_usize;
+    let mut stack = vec![(dir.to_path_buf(), PathBuf::new())];
+    while let Some((current, rel_dir)) = stack.pop() {
+        for entry in std::fs::read_dir(&current).ok()? {
+            visited += 1;
+            if visited > probe.max_entries {
+                return None;
+            }
+            let entry = entry.ok()?;
+            let rel = rel_dir.join(entry.file_name());
+            let meta = entry.path().symlink_metadata().ok()?;
+            if meta.is_dir() {
+                if !keeper.keeps_tree(&rel) {
+                    stack.push((entry.path(), rel));
+                }
+            } else if keeper.keeps(&rel, &meta) {
+                if let Some(id) = file_id(&meta) {
+                    total = total.saturating_sub(removable.remove(&id).unwrap_or(0));
+                    kept.insert(id);
+                }
+            } else {
+                let bytes = if probe.allocated {
+                    allocated_bytes(&meta)
+                } else {
+                    meta.len()
+                };
+                if let Some(id) = file_id(&meta)
+                    && (kept.contains(&id) || removable.insert(id, bytes).is_some())
+                {
+                    continue;
+                }
+                total += bytes;
+                if total >= probe.enough {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(total)
+}
+
+/// Identity of a file with more than one link, so its data is counted once (`None`: a file
+/// with a single link, or no way to tell).
+type FileId = (u64, u64);
+
+#[cfg(unix)]
+fn file_id(meta: &Metadata) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt as _;
+    (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+const fn file_id(_meta: &Metadata) -> Option<FileId> {
+    None
+}
+
+#[cfg(unix)]
+fn allocated_bytes(meta: &Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    meta.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn allocated_bytes(meta: &Metadata) -> u64 {
+    meta.len()
 }
 
 /// Bytes of the files under `dir` (unreadable entries count as empty).
@@ -288,6 +392,43 @@ mod tests {
             trimmed.freed,
             if cfg!(unix) { 5 * 4 + 100 } else { 5 * 4 + 200 }
         );
+    }
+
+    #[test]
+    fn trimmable_reports_what_a_trim_would_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        write(&target.join("release/deps/bcode-1234"), 4096, true);
+        #[cfg(unix)]
+        std::fs::hard_link(
+            target.join("release/deps/bcode-1234"),
+            target.join("release/bcode"),
+        )
+        .unwrap();
+        #[cfg(not(unix))]
+        write(&target.join("release/bcode.exe"), 4096, true);
+        write(&target.join("debug/deps/libx.rlib"), 8192, false);
+        let keeper = Keeper::new(&rust_defaults()).unwrap();
+        let probe = TrimProbe {
+            allocated: false,
+            ..TrimProbe::default()
+        };
+        // The deps copy of the binary shares its data with the kept one.
+        let expected = if cfg!(unix) { 8192 } else { 8192 + 4096 };
+        assert_eq!(trimmable(&target, &keeper, probe), Some(expected));
+        let small = TrimProbe {
+            enough: 1024,
+            ..probe
+        };
+        assert_eq!(trimmable(&target, &keeper, small), None, "enough to clean");
+
+        trim(&target, &keeper, &CancelToken::new(), &mut |_| {}).unwrap();
+        assert_eq!(
+            trimmable(&target, &keeper, probe),
+            Some(0),
+            "trimmed already"
+        );
+        assert_eq!(trimmable(&target, &keeper, small), Some(0));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bclean_model::Classification;
+use bclean_model::{ActionSpec, Classification, Reason, SizeModeSpec};
 use bclean_rules::{Classifier, RuleSet};
 use bclean_scan::{ListedEntry, NoPrune, PruneOracle, ScanError, ScanOptions, ScanProgress};
 use bclean_staleness::{StalenessEngine, unix_now};
@@ -451,9 +451,51 @@ pub fn classify_all(rules: &RuleSet, tree: &Tree) -> BTreeMap<PathBuf, Classific
     Classifier::new(rules, &staleness)
         .classify_tree(tree)
         .into_iter()
-        .map(|e| (e.path, e.classification))
+        .map(|e| {
+            let class = settle_trim(rules, &e.path, e.classification);
+            (e.path, class)
+        })
         .collect()
 }
+
+/// Sizes a `TRIM` classification by what trimming would free now, not the directory's size.
+///
+/// A trim keeps outputs (release binaries), so a trimmed `target/` keeps its classification
+/// with the size of what it kept: every automatic clean picked it again, "freed" nothing, and
+/// the same items came back. When the directory holds little besides what a trim keeps (see
+/// [`bclean_actions::trim::trimmable`]), its size is what a trim would free (zero right after
+/// one, which takes it out of the candidates); larger ones keep their measured size.
+fn settle_trim(rules: &RuleSet, path: &Path, mut class: Classification) -> Classification {
+    let ActionSpec::Trim { keep } = &class.action else {
+        return class;
+    };
+    let Ok(keeper) = bclean_actions::trim::Keeper::new(keep) else {
+        return class;
+    };
+    let probe = bclean_actions::trim::TrimProbe {
+        allocated: matches!(rules.size_mode(), SizeModeSpec::Allocated),
+        ..bclean_actions::trim::TrimProbe::default()
+    };
+    let Some(bytes) = bclean_actions::trim::trimmable(path, &keeper, probe) else {
+        return class;
+    };
+    if bytes < class.size {
+        class.reasons.push(Reason::new(
+            REASON_TRIMMABLE,
+            format!(
+                "a trim frees {bytes} of its {} bytes; it keeps the rest",
+                class.size
+            ),
+        ));
+        class.size = bytes;
+        class.score =
+            bclean_rules::score::score(bytes, &class.staleness, class.confidence, class.ephemeral);
+    }
+    class
+}
+
+/// Reason code for a `TRIM` classification sized by what a trim frees.
+pub const REASON_TRIMMABLE: &str = "TRIMMABLE";
 
 /// Re-classifies the subtrees around `affected` paths, replacing their entries in `classes`.
 ///
@@ -487,7 +529,8 @@ pub fn reclassify(
         remove_under(classes, &start);
         if let Some(node) = tree.find(&start) {
             for entry in classifier.classify_subtree(tree, node) {
-                classes.insert(entry.path, entry.classification);
+                let class = settle_trim(rules, &entry.path, entry.classification);
+                classes.insert(entry.path, class);
             }
         }
     }

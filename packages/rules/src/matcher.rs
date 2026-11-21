@@ -504,6 +504,12 @@ impl Indexes {
 }
 
 impl RuleSet {
+    /// How classification sizes are measured.
+    #[must_use]
+    pub const fn size_mode(&self) -> SizeModeSpec {
+        self.size_mode
+    }
+
     /// Compiles the rules and classification settings of `config` using the process
     /// environment for path expansion.
     ///

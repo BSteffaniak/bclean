@@ -113,7 +113,14 @@ alarms, and can auto-clean).
   `monitor.persist_interval` (default 5m) and at shutdown. The watch cursor is saved with the
   snapshot, so unsaved changes are replayed after a crash.
 - After any action, measure actual freed space via volume stats (APFS clones/snapshots make
-  estimates fuzzy).
+  estimates fuzzy). Cleaned items' parents are reconciled, and items an action leaves in place
+  (a trimmed `target/`) are rescanned, since their parent's listing does not look inside them.
+- A `TRIM` classification is sized by what a trim would free: a directory holding little
+  besides what the trim keeps is listed (bounded) and sized exactly, so a trimmed `target/`
+  drops out of the candidates instead of being "cleaned" for zero bytes every time.
+- Outer roots reconcile only after the copies from inner roots queued before them have
+  landed; a copy of `~` taken before a clean, applied after `/` reconciled it, put the
+  cleaned directories back.
 
 ## Dashboard
 
